@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Yahoo Mail Sanity Checker",
+  "version": "1.0.0",
+  "description": "Upload an axe Auditor CSV export and analyze Yahoo Mail Plus sanity checks.",
+  "action": {
+    "default_title": "Yahoo Mail Sanity Checker"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["tabs"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline';"
+  }
+}

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yahoo Mail — JIRA Issue Sanity Checker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── UPLOAD SCREEN ─────────────────────────────── -->
+<div id="uploadScreen" class="upload-screen">
+  <div class="upload-header">
+    <div class="logo">🛡️</div>
+    <h1>Yahoo Mail — Sanity Checker</h1>
+    <p class="upload-sub">Upload an axe Auditor CSV export for a Yahoo Mail Plus audit. The tool runs 10 sanity checks against every issue and gives you a filterable dashboard.</p>
+  </div>
+
+  <div class="platform-selector">
+    <label for="platformDropdown">Select Testing Platform:</label>
+    <select id="platformDropdown">
+      <option value="">-- Choose Platform --</option>
+      <option value="Web">Web</option>
+      <option value="iPad">iPad</option>
+      <option value="iOS mobile">iOS mobile</option>
+      <option value="Android tablet">Android tablet</option>
+      <option value="Android mobile">Android mobile</option>
+    </select>
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-icon">📂</div>
+    <p class="drop-title">Drop the CSV here</p>
+    <p class="drop-hint">or click to browse</p>
+    <input type="file" id="fileInput" accept=".csv" hidden>
+    <div class="file-pills" id="filePills"></div>
+  </div>
+
+  <button class="analyze-btn" id="analyzeBtn" disabled>Analyze</button>
+  <p class="upload-note" id="uploadNote">Select a platform and CSV file to continue</p>
+</div>
+
+<!-- ── DASHBOARD ─────────────────────────────────── -->
+<div id="dashboard" class="dashboard hidden">
+
+  <div class="dash-header">
+    <div>
+      <h1>Yahoo Mail — JIRA Issue Sanity Check</h1>
+      <p id="dashSubtitle" class="dash-sub"></p>
+    </div>
+    <button class="reset-btn" id="resetBtn">← Upload New File</button>
+  </div>
+
+  <div class="stat-boxes" id="statBoxes"></div>
+
+  <h2 class="section-title">Check Pass Rates</h2>
+  <div class="ba-boxes" id="checkBoxes"></div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="issues">📋 Issue Details</button>
+    <button class="tab-btn" data-tab="failed">🚩 Failed Checks</button>
+    <button class="tab-btn" data-tab="pages">📄 Page-wise Details</button>
+    <button class="tab-btn" data-tab="findings">🔑 Key Findings</button>
+  </div>
+  <div class="tab-content" id="tabContent"></div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
