@@ -1,0 +1,12 @@
+Issue ID,Summary,Test Unit,Description,Method,Attachments,URL
+1,Issue 1 - Home page (hero),Home page,"Platform: web
+Authentication State: Logged In
+Operating System: Windows 11
+Browser: Chrome
+Test Method: Keyboard
+Screen Name: Home page
+Context:
+Steps to reproduce:
+1. Open the page.
+Expected results:
+The page loads.",Manual,,https://example.com

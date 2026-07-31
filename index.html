@@ -1,58 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Yahoo Mail — JIRA Issue Sanity Checker</title>
-<link rel="stylesheet" href="style.css">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Yahoo Mail Plus — JIRA Sanity Checker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  /* Cache-buster: stamp local assets with a fresh version each load so a plain
+     refresh always fetches the latest CSS/JS (the local static server sends no
+     cache headers). Papa Parse is a versioned CDN file, so it stays cacheable. */
+  window.__ASSET_V = Date.now();
+  document.write('<link rel="stylesheet" href="style.css?v=' + window.__ASSET_V + '">');
+</script>
 </head>
 <body>
 
 <!-- ── UPLOAD SCREEN ─────────────────────────────── -->
-<div id="uploadScreen" class="upload-screen">
-  <div class="upload-header">
-    <div class="logo">🛡️</div>
-    <h1>Yahoo Mail — Sanity Checker</h1>
-    <p class="upload-sub">Upload an axe Auditor CSV export for a Yahoo Mail Plus audit. The tool runs 10 sanity checks against every issue and gives you a filterable dashboard.</p>
+<section class="upload-screen" id="uploadScreen">
+  <div class="upload-card" id="dropzone">
+    <input type="file" id="fileInput" accept=".csv" hidden />
+    <div class="upload-brand">
+      <span class="upload-mark" aria-hidden="true">✓</span>
+      <div>
+        <p class="upload-eyebrow">Deque · Accessibility QA</p>
+        <h1 class="upload-title">Yahoo Mail Plus — JIRA Sanity Checker</h1>
+      </div>
+    </div>
+    <p class="upload-lead">Drop an axe Auditor CSV export below. The tool runs 10 sanity checks against every issue and opens a filterable dashboard — no platform selection needed, each issue is detected automatically.</p>
+    <div class="upload-drop">
+      <div class="upload-icon" aria-hidden="true">⤓</div>
+      <p class="upload-drop-title">Drop the CSV here</p>
+      <p class="upload-drop-sub">or</p>
+      <button class="btn-primary" id="browseBtn" type="button">Choose file</button>
+      <p class="upload-hint">Web · Android Tablet · Android Mobile · iPad · iPhone</p>
+    </div>
+    <p class="upload-status" id="uploadStatus"></p>
   </div>
-
-  <div class="drop-zone" id="dropZone">
-    <div class="drop-icon">📂</div>
-    <p class="drop-title">Drop the CSV here</p>
-    <p class="drop-hint">or click to browse</p>
-    <input type="file" id="fileInput" accept=".csv" hidden>
-    <div class="file-pills" id="filePills"></div>
-  </div>
-
-  <button class="analyze-btn" id="analyzeBtn" disabled>Analyze</button>
-  <p class="upload-note" id="uploadNote">Select a CSV file to continue</p>
-</div>
+</section>
 
 <!-- ── DASHBOARD ─────────────────────────────────── -->
-<div id="dashboard" class="dashboard hidden">
+<div class="dashboard hidden" id="dashboard">
 
-  <div class="dash-header">
-    <div>
-      <h1>Yahoo Mail — JIRA Issue Sanity Check</h1>
-      <p id="dashSubtitle" class="dash-sub"></p>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">✓</span>
+        <div class="brand-text">
+          <p class="brand-eyebrow">Deque · Accessibility QA</p>
+          <h1>Yahoo Mail — JIRA Issue Sanity Check</h1>
+          <p class="brand-sub" id="dashSubtitle"></p>
+        </div>
+      </div>
+      <button class="btn-ghost" id="resetBtn" type="button">← Upload new file</button>
     </div>
-    <button class="reset-btn" id="resetBtn">← Upload New File</button>
-  </div>
+  </header>
 
-  <div class="stat-boxes" id="statBoxes"></div>
+  <main class="dash-main">
 
-  <h2 class="section-title">Check Pass Rates</h2>
-  <div class="ba-boxes" id="checkBoxes"></div>
+    <!-- summary stat cards -->
+    <div class="stat-grid" id="statGrid"></div>
 
-  <div class="tab-bar">
-    <button class="tab-btn active" data-tab="issues">📋 Issue Details</button>
-    <button class="tab-btn" data-tab="failed">🚩 Failed Checks</button>
-    <button class="tab-btn" data-tab="findings">🔑 Key Findings</button>
-  </div>
-  <div class="tab-content" id="tabContent"></div>
+    <!-- per-check pass rates -->
+    <h2 class="section-title">Check pass rates</h2>
+    <div class="rate-grid" id="rateGrid"></div>
 
+    <!-- tabs -->
+    <nav class="tab-bar" id="tabBar">
+      <button class="tab-btn active" data-tab="issues" type="button">Issue details</button>
+      <button class="tab-btn" data-tab="failed" type="button">Failed checks</button>
+      <button class="tab-btn" data-tab="pages" type="button">Page-wise details</button>
+      <button class="tab-btn" data-tab="findings" type="button">Key findings</button>
+    </nav>
+
+    <!-- filter bar (shared) -->
+    <div class="controls" id="controls">
+      <div class="control-group control-search">
+        <label for="searchBox">Search</label>
+        <input type="text" id="searchBox" placeholder="Issue ID, summary, test unit…" />
+      </div>
+      <div class="control-group">
+        <label for="platformFilter">Platform</label>
+        <select id="platformFilter"><option value="all">All platforms</option></select>
+      </div>
+      <div class="control-group">
+        <label for="methodFilter">Method</label>
+        <select id="methodFilter">
+          <option value="all">All methods</option>
+          <option value="manual">Manual</option>
+          <option value="automated">Automated</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label for="statusFilter">Status</label>
+        <select id="statusFilter">
+          <option value="all">All issues</option>
+          <option value="flagged">Flagged only</option>
+          <option value="clean">Clean only</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tabPanel"></div>
+
+  </main>
 </div>
 
-<script src="app.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script>
+  /* Load local scripts with the same cache-busting version, in order. */
+  document.write('<script src="checks.js?v=' + window.__ASSET_V + '"><\/script>');
+  document.write('<script src="script.js?v=' + window.__ASSET_V + '"><\/script>');
+</script>
 </body>
 </html>
