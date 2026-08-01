@@ -64,13 +64,9 @@ function determineIssueType(testMethod, platform) {
   if (!testMethod) return 'Unknown';
   const tm = testMethod.toLowerCase();
 
-  // "keyboard" takes precedence: a keyboard test (e.g. WCAG 2.1.1) is the
-  // operative method even if a screen reader was also running, so it is never
-  // treated as a screen-reader issue and never requires an AT line.
-  if (tm.includes('keyboard')) return 'Keyboard';
-
   if (platform === 'Web') {
     if (tm.includes('nvda') || tm.includes('screen reader') || tm.includes('assistive technology')) return 'Screen Reader';
+    if (tm.includes('keyboard')) return 'Keyboard';
     return 'Other';
   }
 
