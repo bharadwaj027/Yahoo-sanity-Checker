@@ -64,14 +64,19 @@ function determineIssueType(testMethod, platform) {
   if (!testMethod) return 'Unknown';
   const tm = testMethod.toLowerCase();
 
+  // Screen-reader indicators apply on any platform (NVDA / VoiceOver / TalkBack,
+  // or the generic "screen reader" / "assistive technology" wording). Checked
+  // first so a screen-reader issue is classified correctly even when the
+  // Platform line is missing or not recognised as Web.
+  if (tm.includes('nvda') || tm.includes('voiceover') || tm.includes('talkback') ||
+      tm.includes('screen reader') || tm.includes('assistive technology')) return 'Screen Reader';
+
   if (platform === 'Web') {
-    if (tm.includes('nvda') || tm.includes('screen reader') || tm.includes('assistive technology')) return 'Screen Reader';
     if (tm.includes('keyboard')) return 'Keyboard';
     return 'Other';
   }
 
   // Native platforms
-  if (tm.includes('voiceover') || tm.includes('talkback') || tm.includes('screen reader')) return 'Screen Reader';
   if (tm.includes('voice control')) return 'Voice Control';
   if (tm.includes('switch access')) return 'Switch Access';
   if (tm.includes('color contrast') || tm.includes('analyser') || tm.includes('analyzer')) return 'Color Contrast Tool';
