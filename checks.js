@@ -118,7 +118,14 @@ function runChecks(row) {
   // lines like "Assistive Technology:" are metadata, not the descriptor.
   const tmDescriptor = testMethod || contextText.split('\n').map(l => l.trim())
     .filter(Boolean).reverse().find(l => !/^[A-Za-z][A-Za-z ]{1,40}?\s*:/.test(l)) || '';
-  const issueType = determineIssueType(tmDescriptor, platform);
+  let issueType = determineIssueType(tmDescriptor, platform);
+  // Fallback: the Test Method didn't name a type, but the Assistive Technology
+  // line names a screen reader → treat it as a screen-reader issue. (S5 still
+  // flags the missing / non-screen-reader Test Method line separately.)
+  if ((issueType === 'Unknown' || issueType === 'Other' || issueType === 'Device-only') &&
+      /nvda|voiceover|talkback|jaws|narrator|screen reader/i.test(atVal || '')) {
+    issueType = 'Screen Reader';
+  }
 
   // A Web Summary may start with a platform tag declaring which environment(s)
   // were tested — e.g. "Windows - ", "MAC - ", "MAC & Windows - ", "[MAC] ".
