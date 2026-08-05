@@ -5,6 +5,7 @@
 
 const PLATFORM_MAP = {
   'web': 'Web',
+  'mobile web': 'Mobile Web',
   'native android tablet app': 'Android Tablet',
   'native android mobile app': 'Android Mobile',
   'native ipad tablet app': 'iPad',
@@ -71,7 +72,7 @@ function determineIssueType(testMethod, platform) {
   if (tm.includes('nvda') || tm.includes('voiceover') || tm.includes('talkback') ||
       tm.includes('screen reader') || tm.includes('assistive technology')) return 'Screen Reader';
 
-  if (platform === 'Web') {
+  if (!isNative(platform)) {   // Web and Mobile Web
     if (tm.includes('keyboard')) return 'Keyboard';
     return 'Other';
   }
