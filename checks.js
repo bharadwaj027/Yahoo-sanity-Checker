@@ -60,9 +60,9 @@ function getStepsList(desc) {
   return steps;
 }
 
-function determineIssueType(testMethod, platform) {
-  if (!testMethod) return 'Unknown';
-  const tm = testMethod.toLowerCase();
+function determineIssueType(testMethod, platform, contextText) {
+  const tm = ((testMethod || '') + ' ' + (contextText || '')).toLowerCase();
+  if (!tm.trim()) return 'Unknown';
 
   // Screen-reader indicators apply on any platform (NVDA / VoiceOver / TalkBack,
   // or the generic "screen reader" / "assistive technology" wording). Checked
@@ -100,7 +100,11 @@ function runChecks(row) {
   const deviceModel = extractField(desc, 'Device [Mm]odel:');
   const browserVal = extractField(desc, 'Browser:');
   const atVal = extractField(desc, 'Assistive Technology:');
-  const testMethod = extractField(desc, 'Test Method:');
+  // Test Method belongs to the Context section (its last line). Read it from
+  // there only, so a stray "Test Method:" in Environment can't stand in for a
+  // missing Context one, and classification scans the whole Context block.
+  const contextText = extractBlock(desc, 'Context:', ['Steps to reproduce:', 'Steps to Reproduce:']) || '';
+  const testMethod = extractField(contextText, 'Test Method:');
   const screenName = extractField(desc, 'Screen Name:');
   const platformUrl = extractField(desc, 'Platform URL:');
   const appVersion = extractField(desc, '[A-Za-z]*\\s*[Aa]pp [Vv]ersion tested:');
@@ -109,7 +113,7 @@ function runChecks(row) {
 
   const steps = getStepsList(desc);
   const step1 = steps.find(s => s.num === 1);
-  const issueType = determineIssueType(testMethod, platform);
+  const issueType = determineIssueType(testMethod, platform, contextText);
 
   // A Web Summary may start with a platform tag declaring which environment(s)
   // were tested — e.g. "Windows - ", "MAC - ", "MAC & Windows - ", "[MAC] ".
