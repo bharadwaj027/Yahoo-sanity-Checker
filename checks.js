@@ -231,9 +231,10 @@ function runChecks(row) {
 
     if (!testMethod) issues.push('The Context section does not end with a "Test Method:" line.');
 
-    // Web: the Summary prefix declares which environment(s) were tested, and the
-    // Context must match — Windows→Windows/Chrome, MAC→macOS/Safari, both→both.
-    if (!native) {
+    // Desktop Web only: the Summary prefix declares which environment(s) were
+    // tested, and the Context must match — Windows→Windows/Chrome,
+    // MAC→macOS/Safari, both→both. Mobile Web and native use no prefix.
+    if (platform === 'Web') {
       const osl = (osVal || '').toLowerCase();
       const bl  = (browserVal || '').toLowerCase();
       const tml = (testMethod || '').toLowerCase();
