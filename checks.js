@@ -60,9 +60,9 @@ function getStepsList(desc) {
   return steps;
 }
 
-function determineIssueType(testMethod, platform, contextText) {
-  const tm = ((testMethod || '') + ' ' + (contextText || '')).toLowerCase();
-  if (!tm.trim()) return 'Unknown';
+function determineIssueType(testMethod, platform) {
+  if (!testMethod) return 'Unknown';
+  const tm = testMethod.toLowerCase();
 
   // Screen-reader indicators apply on any platform (NVDA / VoiceOver / TalkBack,
   // or the generic "screen reader" / "assistive technology" wording). Checked
@@ -113,7 +113,12 @@ function runChecks(row) {
 
   const steps = getStepsList(desc);
   const step1 = steps.find(s => s.num === 1);
-  const issueType = determineIssueType(testMethod, platform, contextText);
+  // Classify from the Test Method descriptor: the labelled line if present, else
+  // the last unlabelled Context line (the descriptor missing its label). Field
+  // lines like "Assistive Technology:" are metadata, not the descriptor.
+  const tmDescriptor = testMethod || contextText.split('\n').map(l => l.trim())
+    .filter(Boolean).reverse().find(l => !/^[A-Za-z][A-Za-z ]{1,40}?\s*:/.test(l)) || '';
+  const issueType = determineIssueType(tmDescriptor, platform);
 
   // A Web Summary may start with a platform tag declaring which environment(s)
   // were tested — e.g. "Windows - ", "MAC - ", "MAC & Windows - ", "[MAC] ".
@@ -247,6 +252,21 @@ function runChecks(row) {
       } else if (ctxHasMac && ctxHasWin) {
         issues.push('The Context includes both a Windows/Chrome and a macOS/Safari environment. Add a platform prefix ("Windows", "MAC", or "MAC & Windows") to the Summary, or keep only the environment that was tested.');
       }
+
+      // Only the allowed fields may appear in Environment / Context (Web).
+      // Assistive Technology is allowed in Context only for screen-reader issues.
+      const unexpected = (block, allowed) => (block || '').split('\n').reduce((out, line) => {
+        const m = line.match(/^\s*([A-Za-z][A-Za-z ]{1,40}?)\s*:/);
+        if (m && !allowed.includes(m[1].trim().toLowerCase().replace(/\s+/g, ' '))) out.push(m[1].trim());
+        return out;
+      }, []);
+      const envBlock = extractBlock(desc, 'Environment:', ['Context:']) || '';
+      const ctxAllowed = ['operating system', 'browser', 'test method'];
+      if (issueType === 'Screen Reader') ctxAllowed.push('assistive technology');
+      unexpected(envBlock, ['platform', 'platform url', 'authentication state']).forEach(f =>
+        issues.push(`The Environment section has an unexpected field "${f}" — only Platform, Platform URL, and Authentication State belong here.`));
+      unexpected(contextText, ctxAllowed).forEach(f =>
+        issues.push(`The Context section has an unexpected field "${f}" — only Operating System, Browser, Test Method${issueType === 'Screen Reader' ? ', and Assistive Technology' : ''} belong here.`));
     }
 
     [
