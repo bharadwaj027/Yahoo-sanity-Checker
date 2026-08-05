@@ -310,7 +310,7 @@ function runChecks(row) {
       return;
     }
     const t1 = step1.text.toLowerCase();
-    const mentionsScreenReaderTurnOn = /turn on (the )?screen reader|turn on nvda|turn on voiceover|turn on talkback/.test(t1);
+    const mentionsScreenReaderTurnOn = /turn on (the )?(screen reader|nvda|voice ?over|talkback|jaws|narrator)/.test(t1);
     const mentionsVoiceControl = /voice control/.test(t1);
     const mentionsSwitchAccess = /switch access/.test(t1);
     const mentionsAnyAT = mentionsScreenReaderTurnOn || mentionsVoiceControl || mentionsSwitchAccess;
