@@ -207,7 +207,6 @@ function runChecks(row) {
       if (!browserVal) issues.push('The Browser line is missing (it is needed for Web).');
     } else {
       if (!deviceModel) issues.push('The Device Model line is missing (it is needed for app testing).');
-      if (browserVal) issues.push('There is a Browser line, but this is an app issue — it looks copied from a Web template.');
     }
 
     if (issueType === 'Screen Reader') {
@@ -252,21 +251,34 @@ function runChecks(row) {
       } else if (ctxHasMac && ctxHasWin) {
         issues.push('The Context includes both a Windows/Chrome and a macOS/Safari environment. Add a platform prefix ("Windows", "MAC", or "MAC & Windows") to the Summary, or keep only the environment that was tested.');
       }
+    }
 
-      // Only the allowed fields may appear in Environment / Context (Web).
-      // Assistive Technology is allowed in Context only for screen-reader issues.
-      const unexpected = (block, allowed) => (block || '').split('\n').reduce((out, line) => {
-        const m = line.match(/^\s*([A-Za-z][A-Za-z ]{1,40}?)\s*:/);
-        if (m && !allowed.includes(m[1].trim().toLowerCase().replace(/\s+/g, ' '))) out.push(m[1].trim());
+    // Only the fields listed for this platform may appear in Environment / Context;
+    // flag any others. (Missing required fields are flagged by the checks above.)
+    {
+      const unexpected = (block, isAllowed) => (block || '').split('\n').reduce((out, line) => {
+        const m = line.match(/^\s*([A-Za-z][A-Za-z /]{1,40}?)\s*:/);
+        if (m) { const lbl = m[1].trim().toLowerCase().replace(/\s+/g, ' '); if (!isAllowed(lbl)) out.push(m[1].trim()); }
         return out;
       }, []);
       const envBlock = extractBlock(desc, 'Environment:', ['Context:']) || '';
-      const ctxAllowed = ['operating system', 'browser', 'test method'];
-      if (issueType === 'Screen Reader') ctxAllowed.push('assistive technology');
-      unexpected(envBlock, ['platform', 'platform url', 'authentication state']).forEach(f =>
-        issues.push(`The Environment section has an unexpected field "${f}" — only Platform, Platform URL, and Authentication State belong here.`));
+      const srOk = issueType === 'Screen Reader';
+      let envAllowed, ctxAllowed, envList, ctxList;
+      if (!native) {
+        envAllowed = l => ['platform url', 'authentication state'].includes(l);
+        ctxAllowed = l => ['platform', 'operating system', 'browser', 'test method'].includes(l) || (srOk && l === 'assistive technology');
+        envList = 'Platform URL and Authentication State';
+        ctxList = `Platform, Operating System, Browser, Test Method${srOk ? ', and Assistive Technology' : ''}`;
+      } else {
+        envAllowed = l => l.includes('app version') || l === 'authentication state';
+        ctxAllowed = l => ['platform', 'operating system', 'device model', 'assistive technology', 'test method'].includes(l);
+        envList = 'the app version tested and Authentication State';
+        ctxList = 'Platform, Operating System, Device Model, Assistive Technology, and Test Method';
+      }
+      unexpected(envBlock, envAllowed).forEach(f =>
+        issues.push(`The Environment section has an unexpected field "${f}" — only ${envList} belong here.`));
       unexpected(contextText, ctxAllowed).forEach(f =>
-        issues.push(`The Context section has an unexpected field "${f}" — only Operating System, Browser, Test Method${issueType === 'Screen Reader' ? ', and Assistive Technology' : ''} belong here.`));
+        issues.push(`The Context section has an unexpected field "${f}" — only ${ctxList} belong here.`));
     }
 
     [
