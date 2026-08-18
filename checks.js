@@ -6,6 +6,7 @@
 const PLATFORM_MAP = {
   'web': 'Web',
   'mobile web': 'Mobile Web',
+  'native app': 'Native App',
   'native android tablet app': 'Android Tablet',
   'native android mobile app': 'Android Mobile',
   'native ipad tablet app': 'iPad',
@@ -27,7 +28,7 @@ function normalizePlatform(rawPlatform) {
 }
 
 function isNative(platform) {
-  return ['Android Tablet', 'Android Mobile', 'iPad', 'iPhone'].includes(platform);
+  return ['Native App', 'Android Tablet', 'Android Mobile', 'iPad', 'iPhone'].includes(platform);
 }
 
 function extractField(desc, label) {
@@ -108,7 +109,7 @@ function runChecks(row) {
   const testMethod = extractField(contextText, 'Test Method:');
   const screenName = extractField(desc, 'Screen Name:');
   const platformUrl = extractField(desc, 'Platform URL:');
-  const appVersion = extractField(desc, '[A-Za-z]*\\s*[Aa]pp [Vv]ersion tested:');
+  const appVersion = extractField(desc, '(?:iOS|Android|iOS\\/Android)?\\s*(?:[Aa]pp\\s+)?[Vv]ersion tested:');
   const resourceLinkLine = extractField(desc, '(?:Resource [Ll]ink|References):');
   const resourceLinkLabelWrong = /References:/.test(desc) && !/Resource [Ll]ink:/i.test(desc);
 
@@ -209,11 +210,14 @@ function runChecks(row) {
   (function () {
     const issues = [];
     if (!rawPlatform) issues.push('The Platform line is missing.');
-    if (!osVal) issues.push('The Operating System line is missing.');
-
+    
     if (!native) {
+      // Web platform requirements
+      if (!osVal) issues.push('The Operating System line is missing.');
       if (!browserVal) issues.push('The Browser line is missing (it is needed for Web).');
     } else {
+      // Native app requirements
+      if (!osVal) issues.push('The Operating System line is missing (it is needed for app testing).');
       if (!deviceModel) issues.push('The Device Model line is missing (it is needed for app testing).');
     }
 
@@ -221,8 +225,31 @@ function runChecks(row) {
       if (!atVal) {
         issues.push('This is a screen reader issue but the Assistive Technology line is missing.');
       } else if (native) {
-        const expectedAT = (platform === 'Android Tablet' || platform === 'Android Mobile') ? 'talkback' : 'voiceover';
-        if (!atVal.toLowerCase().includes(expectedAT)) {
+        let expectedAT = null;
+        const atLower = (atVal || '').toLowerCase();
+        const osLower = (osVal || '').toLowerCase();
+        const tmLower = (testMethod || '').toLowerCase();
+        
+        if (platform === 'Android Tablet' || platform === 'Android Mobile') {
+          expectedAT = 'talkback';
+        } else if (platform === 'iPad' || platform === 'iPhone') {
+          expectedAT = 'voiceover';
+        } else if (platform === 'Native App') {
+          // For generic 'Native App', accept combined VoiceOver/TalkBack or infer from context
+          // If AT contains both or either TalkBack/VoiceOver, it's valid
+          if (atLower.includes('voiceover') && atLower.includes('talkback')) {
+            // Combined format is acceptable
+            expectedAT = null;
+          } else if (atLower.includes('voiceover') || atLower.includes('talkback')) {
+            // Single AT mentioned, accept it
+            expectedAT = null;
+          } else if (osLower.includes('android') || osLower.includes('one ui') || tmLower.includes('android')) {
+            expectedAT = 'talkback';
+          } else if (osLower.includes('ios') || osLower.includes('ipados') || tmLower.includes('iphone')) {
+            expectedAT = 'voiceover';
+          }
+        }
+        if (expectedAT && !atLower.includes(expectedAT)) {
           issues.push(`The Assistive Technology "${atVal}" is not the one expected for this platform (${expectedAT}).`);
         }
       }
@@ -279,7 +306,7 @@ function runChecks(row) {
         envList = 'Platform URL and Authentication State';
         ctxList = `Platform, Operating System, Browser, Test Method${srOk ? ', and Assistive Technology' : ''}`;
       } else {
-        envAllowed = l => l.includes('app version') || l === 'authentication state';
+        envAllowed = l => l.includes('version tested') || l.includes('app version') || l === 'authentication state';
         ctxAllowed = l => ['platform', 'operating system', 'device model', 'assistive technology', 'test method'].includes(l);
         envList = 'the app version tested and Authentication State';
         ctxList = 'Platform, Operating System, Device Model, Assistive Technology, and Test Method';
