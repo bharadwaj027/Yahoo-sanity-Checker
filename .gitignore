@@ -1,0 +1,11 @@
+# Local duplicate copies of the tool (canonical source lives at the repo root)
+/Yahoo-sanity-Checker-main/
+/Yahoo Sanity checker for all platforms/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
