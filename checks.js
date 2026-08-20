@@ -109,6 +109,63 @@ function isMeaningless(text) {
   return false;
 }
 
+// "Reference" / "References" is accepted in place of "Resource Link" for native
+// audits only (see S12). Reads the label's inline value plus any following lines,
+// stopping at a blank line or the next known section header. Line-based (like
+// splitSections) so a URL on the line *after* the label is still captured.
+// Returns '' when the label is absent or carries no value.
+function referenceFieldContent(desc) {
+  const lines = String(desc || '').replace(/\r\n/g, '\n').split('\n');
+  const labelRe = /^\s*References?\s*:\s*(.*)$/i;
+  const headerLineRe = new RegExp(
+    '^\\s*(' + SECTION_HEADERS.map(h => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\s*:',
+    'i'
+  );
+  const out = [];
+  let capturing = false;
+  for (const line of lines) {
+    if (!capturing) {
+      const m = line.match(labelRe);
+      if (m) { capturing = true; if (m[1].trim()) out.push(m[1]); }
+    } else {
+      if (/^\s*$/.test(line)) break;                 // blank line ends the block
+      if (headerLineRe.test(line)) break;            // next known section header
+      if (/^\s*References?\s*:/i.test(line)) break;   // a second Reference label
+      out.push(line);
+    }
+  }
+  return out.join('\n').trim();
+}
+
+// Remediation Recommendation must use that exact label. If instead one of these
+// common variant labels is present, report the wrong name. Returns the variant
+// found, or null.
+const REMEDIATION_VARIANTS = ['Recommendation to fix', 'Fix Recommendation', 'How to Fix', 'Suggested Fix', 'Recommendation'];
+function detectRemediationVariant(desc) {
+  for (const v of REMEDIATION_VARIANTS) {
+    const re = new RegExp('^\\s*' + v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:', 'im');
+    if (re.test(String(desc || ''))) return v;
+  }
+  return null;
+}
+
+// Remediation Recommendation is validated structurally only (no content-meaning
+// checks). Returns an error string, or null when it passes.
+function remediationFieldProblem(sections, desc) {
+  const labelPresent = /^\s*Remediation Recommendation\s*:/im.test(String(desc || ''));
+  if (!labelPresent) {
+    const variant = detectRemediationVariant(desc);
+    return variant
+      ? `Invalid field name "${variant}" used instead of "Remediation Recommendation".`
+      : 'Remediation Recommendation is missing.';
+  }
+  const content = fieldContent(sections, desc, 'Remediation Recommendation');
+  if (!content) return 'Remediation Recommendation is empty.';   // empty or whitespace only
+  if (/^\s*Rule\b/im.test(content)) return 'Remediation Recommendation contains a "Rule" section.';
+  if (/^\s*Background\b/im.test(content)) return 'Remediation Recommendation contains a "Background" section.';
+  return null;   // any non-empty content is valid
+}
+
 // ── Summary-mapping lookup (S11) ────────────────────────────────────────────
 function normSummaryText(s) {
   return String(s || '')
@@ -281,7 +338,9 @@ function runChecks(row) {
   const platformUrl = extractField(desc, 'Platform URL:');
   const appVersion = extractField(desc, '(?:iOS|Android|iOS\\/Android)?\\s*(?:[Aa]pp\\s+)?[Vv]ersion tested:');
   const resourceLinkLine = extractField(desc, '(?:Resource [Ll]ink|References):');
-  const resourceLinkLabelWrong = /References:/.test(desc) && !/Resource [Ll]ink:/i.test(desc);
+  // Web expects the label "Resource Link:"; a "References:" label is wrong there.
+  // Native audits accept "Resource Link" OR "Reference(s)", so don't flag it.
+  const resourceLinkLabelWrong = !native && /References:/.test(desc) && !/Resource [Ll]ink:/i.test(desc);
 
   const steps = getStepsList(desc);
   const step1 = steps.find(s => s.num === 1);
@@ -633,16 +692,30 @@ function runChecks(row) {
   // "Automation" spellings). Manual issues are not summary-checked.
   checks.push(buildSummaryCheck('S11', 'Summary validation', summary, checkpoint, method, true, desc));
 
-  // 12. Required fields present + meaningful content (every issue)
+  // 12. Required fields present + meaningful content — conditional by audit type.
+  // The audit type is the tool's existing deterministic platform classification
+  // (`native`), derived from the Environment "Platform:" line — never inferred
+  // from issue wording, remediation, WCAG criterion, or the presence of a field.
+  //   • Web:    Code Snippet REQUIRED; Resource Link REQUIRED.
+  //   • Native: Code Snippet NOT required; "Resource Link" OR "Reference"
+  //             satisfies the link requirement (at least one, non-empty).
   (function () {
     const sections = splitSections(desc);
-    const required = [
-      'Environment', 'Context', 'Steps to reproduce', 'Expected results',
-      'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
-      'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name',
-    ];
+    const required = native
+      ? ['Environment', 'Context', 'Steps to reproduce', 'Expected results',
+         'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
+         'Remediation Recommendation', 'Screen Name']
+      : ['Environment', 'Context', 'Steps to reproduce', 'Expected results',
+         'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
+         'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name'];
     const problems = [];
     required.forEach(name => {
+      // Remediation Recommendation: structural validation only (see the helper).
+      if (name === 'Remediation Recommendation') {
+        const p = remediationFieldProblem(sections, desc);
+        if (p) problems.push(p);
+        return;
+      }
       const content = fieldContent(sections, desc, name);
       if (!content) {
         problems.push(`${name} is missing.`);
@@ -650,6 +723,18 @@ function runChecks(row) {
         problems.push(`${name} has no meaningful content ("${content.replace(/\s+/g, ' ').slice(0, 40)}").`);
       }
     });
+    // Native only: the link requirement is met by Resource Link OR Reference.
+    // Neither is preferred; at least one must be present and non-empty.
+    if (native) {
+      const rlOk = !!fieldContent(sections, desc, 'Resource Link').trim();
+      const refOk = !!referenceFieldContent(desc).trim();
+      if (!rlOk && !refOk) {
+        const anyLabel = /^\s*(?:Resource Link|References?)\s*:/im.test(desc);
+        problems.push(anyLabel
+          ? 'Resource Link or Reference is empty.'
+          : 'Resource Link or Reference is missing.');
+      }
+    }
     if (problems.length) {
       checks.push({ id: 'S12', name: 'Required fields', status: 'fail', note: problems.join(' '), notes: problems });
     } else {

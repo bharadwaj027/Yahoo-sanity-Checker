@@ -46,6 +46,24 @@ function runTests() {
     'URL': 'https://example.com', 'Checkpoint': '4.1.2',
   }, over || {});
 
+  // Native fixture: Platform maps to a native app, so runChecks classifies it as
+  // native. No Code Snippet (not required for native). Used by the S12 native
+  // conditional-required-fields tests below.
+  function nativeSections() {
+    return {
+      'Environment': 'App Version tested: 7.42.1\nAuthentication State: Logged In',
+      'Context': 'Platform: Native Android Tablet App\nOperating System: Android 13\nDevice Model: Pixel Tablet\nTest Method: TalkBack on Android',
+      'Steps to reproduce': '1. Turn on the screen reader (TalkBack).\n2. Navigate to the above-mentioned element.\n3. Observe the issue.',
+      'Expected results': 'The above-mentioned button element(s) is provided with an accessible name.',
+      'Actual results': 'The above-mentioned button element(s) is missing an accessible name.',
+      'Affected user population': 'Screen reader users.',
+      'Applicable WCAG Success Criterion': '4.1.2 Name, Role, Value (Level A)',
+      'Remediation Recommendation': 'Add an accessible name to the button using its content description.',
+      'Resource Link': 'https://dequeuniversity.com/rules/axe/4.7/button-name',
+      'Screen Name': 'Home page',
+    };
+  }
+
   // ── S11 — Summary validation ─────────────────────────────────────
   let r = runChecks(row({ Summary: 'Button does not have a name - Home page (Sign in button)', Description: serialize(fullSections()) }));
   assertStatus('S11 new-wording matches', r, 'S11', 'pass');
@@ -137,9 +155,9 @@ function runTests() {
   r = runChecks(row({ Description: serialize(s) }));
   assertStatus('S12 field whitespace only', r, 'S12', 'fail');
 
-  s = fullSections(); s['Remediation Recommendation'] = 'N/A';
+  s = fullSections(); s['Expected results'] = 'N/A';
   r = runChecks(row({ Description: serialize(s) }));
-  assertStatus('S12 field "N/A"', r, 'S12', 'fail');
+  assertStatus('S12 field "N/A" (content-validated field)', r, 'S12', 'fail');
 
   s = fullSections(); s['Affected user population'] = '-';
   r = runChecks(row({ Description: serialize(s) }));
@@ -148,6 +166,91 @@ function runTests() {
   s = fullSections(); s['Code Snippet'] = 'TBD';
   r = runChecks(row({ Description: serialize(s) }));
   assertStatus('S12 field "TBD"', r, 'S12', 'fail');
+
+  // Remediation Recommendation — structural validation ONLY (no content checks)
+  s = fullSections(); s['Remediation Recommendation'] = 'N/A';
+  r = runChecks(row({ Description: serialize(s) }));
+  assertStatus('S12 remediation "N/A" accepted (no content check)', r, 'S12', 'pass');
+
+  s = fullSections(); s['Remediation Recommendation'] = 'Fix the issue';
+  r = runChecks(row({ Description: serialize(s) }));
+  assertStatus('S12 remediation any text accepted', r, 'S12', 'pass');
+
+  s = fullSections(); s['Remediation Recommendation'] = 'Rule\nElements must have alternative text.';
+  r = runChecks(row({ Description: serialize(s) }));
+  assertStatus('S12 remediation with "Rule" heading fails', r, 'S12', 'fail');
+  record('S12 remediation "Rule" message', (chk(r, 'S12').note || '').includes('"Rule" section'), chk(r, 'S12').note);
+
+  s = fullSections(); s['Remediation Recommendation'] = 'Background\nThis explains the issue.';
+  r = runChecks(row({ Description: serialize(s) }));
+  assertStatus('S12 remediation with "Background" heading fails', r, 'S12', 'fail');
+  record('S12 remediation "Background" message', (chk(r, 'S12').note || '').includes('"Background" section'), chk(r, 'S12').note);
+
+  (function () {
+    const s2 = fullSections(); delete s2['Remediation Recommendation'];
+    const d = serialize(s2) + '\n\nRecommendation to fix:\nDo the thing.';
+    const rr = runChecks(row({ Description: d }));
+    assertStatus('S12 remediation variant field name fails', rr, 'S12', 'fail');
+    record('S12 remediation variant-name message', (chk(rr, 'S12').note || '').includes('Invalid field name'), chk(rr, 'S12').note);
+  })();
+
+  // ── S12 — Native audits: conditional required fields ─────────────
+  // Audit type comes from the deterministic Platform classification (`native`),
+  // never from wording. Native: Code Snippet NOT required; Resource Link OR
+  // Reference satisfies the link requirement (at least one, non-empty).
+  (function () {
+    // sanity: the fixture is actually classified native
+    const base = runChecks(row({ Method: 'Manual', Description: serialize(nativeSections()) }));
+    record('native fixture is classified native', base.native === true, 'native=' + base.native);
+
+    // Native + Resource Link present + Code Snippet absent → PASS
+    let rr = runChecks(row({ Method: 'Manual', Description: serialize(nativeSections()) }));
+    assertStatus('S12 native: Resource Link present, no Code Snippet', rr, 'S12', 'pass');
+    record('S12 native: Code Snippet never reported missing',
+      !(chk(rr, 'S12').note || '').includes('Code Snippet is missing'), chk(rr, 'S12').note);
+
+    // Native + Reference present (no Resource Link) + Code Snippet absent → PASS
+    let s = nativeSections(); delete s['Resource Link'];
+    let d = serialize(s) + '\n\nReference:\nhttps://developer.android.com/guide/topics/ui/accessibility';
+    rr = runChecks(row({ Method: 'Manual', Description: d }));
+    assertStatus('S12 native: Reference satisfies the link requirement', rr, 'S12', 'pass');
+
+    // Native + Resource Link present + Reference missing → PASS (both not required)
+    rr = runChecks(row({ Method: 'Manual', Description: serialize(nativeSections()) }));
+    assertStatus('S12 native: Resource Link only, Reference missing', rr, 'S12', 'pass');
+
+    // Native + both Resource Link and Reference missing → FAIL
+    s = nativeSections(); delete s['Resource Link'];
+    rr = runChecks(row({ Method: 'Manual', Description: serialize(s) }));
+    assertStatus('S12 native: neither link field present', rr, 'S12', 'fail');
+    record('S12 native: link FAIL names both fields',
+      (chk(rr, 'S12').note || '').includes('Resource Link or Reference'), chk(rr, 'S12').note);
+
+    // Native + both present but empty → FAIL
+    s = nativeSections(); s['Resource Link'] = '   ';
+    d = serialize(s) + '\n\nReference:\n   ';
+    rr = runChecks(row({ Method: 'Manual', Description: d }));
+    assertStatus('S12 native: both link fields empty', rr, 'S12', 'fail');
+
+    // Native + a "References:" label is NOT flagged as a wrong label by S8.
+    s = nativeSections(); delete s['Resource Link'];
+    d = serialize(s) + '\n\nReferences:\nhttps://www.w3.org/WAI/';
+    rr = runChecks(row({ Method: 'Manual', Description: d }));
+    assertStatus('S8 native: References label accepted', rr, 'S8', 'pass');
+
+    // Web control: Code Snippet still required (missing → FAIL)
+    let w = fullSections(); delete w['Code Snippet'];
+    rr = runChecks(row({ Description: serialize(w) }));
+    assertStatus('S12 web: Code Snippet still required', rr, 'S12', 'fail');
+    record('S12 web: names missing Code Snippet',
+      (chk(rr, 'S12').note || '').includes('Code Snippet'), chk(rr, 'S12').note);
+
+    // Web control: Reference does NOT substitute for Resource Link
+    w = fullSections(); delete w['Resource Link'];
+    d = serialize(w) + '\n\nReference:\nhttps://example.com/ref';
+    rr = runChecks(row({ Description: d }));
+    assertStatus('S12 web: Reference does not satisfy Resource Link', rr, 'S12', 'fail');
+  })();
 
   // ── S13 — Colour contrast ────────────────────────────────────────
   function contrastRow(actual, over) {
