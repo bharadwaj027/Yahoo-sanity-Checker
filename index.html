@@ -27,7 +27,7 @@
         <h1 class="upload-title">Yahoo — Sanity Checker</h1>
       </div>
     </div>
-    <p class="upload-lead">Drop an axe Auditor CSV export below. The tool runs 10 sanity checks against every issue and opens a filterable dashboard — no platform selection needed, each issue is detected automatically.</p>
+    <p class="upload-lead">Drop an axe Auditor CSV export below. The tool runs 13 sanity checks against every issue and opens a filterable dashboard — no platform selection needed, each issue is detected automatically.</p>
     <div class="upload-drop">
       <div class="upload-icon" aria-hidden="true">⤓</div>
       <p class="upload-drop-title">Drop the CSV here</p>
@@ -109,6 +109,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script>
   /* Load local scripts with the same cache-busting version, in order. */
+  document.write('<script src="summary-map.js?v=' + window.__ASSET_V + '"><\/script>');
   document.write('<script src="checks.js?v=' + window.__ASSET_V + '"><\/script>');
   document.write('<script src="script.js?v=' + window.__ASSET_V + '"><\/script>');
 </script>

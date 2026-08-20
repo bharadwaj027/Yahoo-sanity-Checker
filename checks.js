@@ -50,6 +50,175 @@ function hasPlaceholder(text) {
   return PLACEHOLDER_PATTERNS.some(p => p.test(text));
 }
 
+// ── Description → named sections (for the new S11/S12/S13 checks) ────────────
+// The axe Auditor description is organised under these top-level headings. This
+// splitter is additive — the S1–S10 checks keep using extractField/extractBlock.
+const SECTION_HEADERS = [
+  'Environment', 'Context', 'Steps to reproduce', 'Expected results',
+  'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
+  'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name',
+];
+
+function splitSections(desc) {
+  const out = {};
+  if (!desc) return out;
+  const lines = String(desc).replace(/\r\n/g, '\n').split('\n');
+  const headerRe = new RegExp(
+    '^\\s*(' + SECTION_HEADERS.map(h => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\s*:\\s*(.*)$',
+    'i'
+  );
+  const buf = {};
+  let current = null;
+  for (const line of lines) {
+    const m = line.match(headerRe);
+    if (m) {
+      current = SECTION_HEADERS.find(h => h.toLowerCase() === m[1].toLowerCase()) || m[1];
+      if (!buf[current]) buf[current] = [];
+      if (m[2] && m[2].trim()) buf[current].push(m[2]);   // inline content after "Label:"
+    } else if (current) {
+      buf[current].push(line);
+    }
+  }
+  for (const k in buf) out[k] = buf[k].join('\n').trim();
+  return out;
+}
+
+// Content of a required field: prefer the parsed section, fall back to an inline
+// "Label: value" line (some exports keep e.g. Screen Name on a single line).
+// The fallback only reads the remainder of the label's own line — it must not
+// spill onto later lines, or an empty field would swallow the next heading.
+function fieldContent(sections, desc, name) {
+  const v = sections[name];
+  if (v && v.trim()) return v.trim();
+  const re = new RegExp('^\\s*' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:[ \\t]*([^\\n]*)', 'im');
+  const m = String(desc || '').match(re);
+  return m ? m[1].trim() : '';
+}
+
+// Values that look present but carry no real, issue-specific information.
+const MEANINGLESS_RE = /^(n\/?a|na|n\.a\.?|none|nil|tbd|tba|todo|to be (?:done|added|updated|filled)|null|undefined|[-–—.·•*?]+)$/i;
+function isMeaningless(text) {
+  if (text == null) return true;
+  const t = String(text).trim();
+  if (!t) return true;
+  const core = t.replace(/^[\s\-–—:*•·.>#]+|[\s\-–—:*•·.]+$/g, '').trim();
+  if (!core) return true;
+  if (MEANINGLESS_RE.test(core)) return true;
+  if (/^\[?\s*placeholder\b[^\]]*\]?$/i.test(core)) return true;         // only an unfilled placeholder
+  if (!/\n/.test(core) && hasPlaceholder(core) && core.length < 60) return true; // single-line stub
+  return false;
+}
+
+// ── Summary-mapping lookup (S11) ────────────────────────────────────────────
+function normSummaryText(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Extra exact old-summary wordings that appear in real axe output but differ
+// from the sheet's transcription. Kept here (not in the generated summary-map.js)
+// so they survive regenerating that file. Keyed by checkpoint; each string is
+// matched exactly (as a substring), like the entry's own oldSummary.
+const OLD_SUMMARY_ALIASES = {
+  '1.4.1 b': ['Links must be distinguishable without relying on color',
+              'Links must be distinguishable without relying on colour'],
+};
+
+// Find the mapping entry for an issue. Prefers a match on the NEW (corrected)
+// wording, then the OLD (axe) wording (incl. aliases), then a unique checkpoint.
+function findSummaryMapping(summary, checkpoint) {
+  if (typeof SUMMARY_MAP === 'undefined' || !Array.isArray(SUMMARY_MAP)) return null;
+  const nSum = normSummaryText(summary);
+  if (!nSum) return null;
+  const aliases = (typeof OLD_SUMMARY_ALIASES !== 'undefined') ? OLD_SUMMARY_ALIASES : {};
+  const newHits = [], oldHits = [];
+  for (const e of SUMMARY_MAP) {
+    const nNew = normSummaryText(e.newSummary);
+    if (nNew && nSum.includes(nNew)) newHits.push({ entry: e, matched: 'new', len: nNew.length });
+    const olds = [e.oldSummary].concat(aliases[e.checkpoint] || []);
+    for (const o of olds) {
+      const nOld = normSummaryText(o);
+      if (nOld && nSum.includes(nOld)) oldHits.push({ entry: e, matched: 'old', len: nOld.length, oldText: o });
+    }
+  }
+  const longest = arr => arr.sort((a, b) => b.len - a.len)[0];
+  if (newHits.length) return longest(newHits);
+  if (oldHits.length) return longest(oldHits);
+  const cp = String(checkpoint || '').trim().toLowerCase();
+  if (cp) {
+    const m = SUMMARY_MAP.filter(e => String(e.checkpoint).trim().toLowerCase() === cp);
+    if (m.length === 1) return { entry: m[0], matched: 'none', len: 0 };
+  }
+  return null;
+}
+
+// Which of Expected Results / Actual Results / Remediation Recommendation the
+// issue's CSV text does NOT match the mapping's expected value. Only mismatches
+// are surfaced (so a correctly-filled field isn't repeated back).
+function mismatchedRefFields(e, desc) {
+  const sections = splitSections(desc || '');
+  const norm = s => normSummaryText(s);
+  const rows = [
+    ['Expected Results', fieldContent(sections, desc, 'Expected results'), e.expectedResults],
+    ['Actual Results', fieldContent(sections, desc, 'Actual results'), e.actualResults],
+    ['Remediation Recommendation', fieldContent(sections, desc, 'Remediation Recommendation'), e.remediation],
+  ];
+  return rows
+    .filter(([, got, exp]) => exp && norm(got) !== norm(exp))
+    .map(([label, , exp]) => ({ label, expected: exp }));
+}
+
+// Shared builder for the automation summary check (S11). automation-only.
+function buildSummaryCheck(id, name, summary, checkpoint, method, verbose, desc) {
+  if (!/^automat/i.test(String(method || ''))) {
+    return { id, name, status: 'na', note: 'Only applies to automation issues.' };
+  }
+  const match = findSummaryMapping(summary, checkpoint);
+  if (!match) {
+    return { id, name, status: 'na', note: 'No summary-mapping entry matched this automation issue, so the wording could not be validated.' };
+  }
+  const e = match.entry;
+  const fields = mismatchedRefFields(e, desc);
+  const detail = {
+    checkpoint: e.checkpoint, oldSummary: e.oldSummary, newSummary: e.newSummary,
+    matched: match.matched, fields,
+  };
+  if (match.matched === 'new') {
+    const chk = { id, name, status: 'pass', note: `The summary matches the expected new Adobe wording: "${e.newSummary}".` };
+    if (verbose) chk.detail = detail;
+    return chk;
+  }
+  const oldText = match.oldText || e.oldSummary;
+  const why = match.matched === 'old'
+    ? `The summary still uses the old AXE wording ("${oldText}") and needs to be updated.`
+    : `The summary does not match the expected new wording for checkpoint ${e.checkpoint}.`;
+  const chk = { id, name, status: 'fail', note: `${why} Expected summary: "${e.newSummary}".` };
+  if (verbose) {
+    chk.notes = [
+      `${why} Expected: "${e.newSummary}".`,
+      `Old (AXE) summary: ${e.oldSummary || '(none)'}`,
+      `Expected (new) summary: ${e.newSummary || '(none)'}`,
+    ].concat(fields.map(f => `${f.label} (expected): ${f.expected}`));
+    chk.detail = detail;
+  }
+  return chk;
+}
+
+// ── Colour-contrast issue detection (S13) ───────────────────────────────────
+// Deliberately narrow: only genuine colour / colour-contrast issues qualify, so
+// the details check never fires on unrelated accessibility issues.
+function isColorContrastIssue(summary, checkpoint, mapEntry) {
+  const cp = String(checkpoint || '').trim();
+  if (/^1\.4\.3\b/.test(cp) || /^1\.4\.11\b/.test(cp)) return true;   // contrast success criteria
+  const hay = (String(summary || '') + ' ' +
+    (mapEntry ? String(mapEntry.newSummary || '') + ' ' + String(mapEntry.oldSummary || '') : '')).toLowerCase();
+  if (/^1\.4\.1\b/.test(cp) && /contrast|colou?r/.test(hay)) return true;   // use-of-colour with a contrast angle
+  return /colou?r contrast|contrast ratio|sufficient (?:colou?r )?contrast|minimum colou?r contrast|contrast is not at least|not distinguishable without relying on colou?r/.test(hay);
+}
+
 function getStepsList(desc) {
   const block = extractBlock(desc, 'Steps to reproduce:', ['Expected results:', 'Expected Results:']);
   if (!block) return [];
@@ -92,6 +261,7 @@ function runChecks(row) {
   const method = String(row.Method || '').trim();
   const attachments = String(row.Attachments || '').trim();
   const url = String(row.URL || '').trim();
+  const checkpoint = String(row.Checkpoint || '').trim();
 
   const rawPlatform = extractField(desc, 'Platform:');
   const platform = normalizePlatform(rawPlatform);
@@ -458,6 +628,74 @@ function runChecks(row) {
     }
   })();
 
+  // 11. Automation Summary validation (detailed) — automation issues only.
+  // Automation is read from the Method column (tolerant of "Automated" /
+  // "Automation" spellings). Manual issues are not summary-checked.
+  checks.push(buildSummaryCheck('S11', 'Summary validation', summary, checkpoint, method, true, desc));
+
+  // 12. Required fields present + meaningful content (every issue)
+  (function () {
+    const sections = splitSections(desc);
+    const required = [
+      'Environment', 'Context', 'Steps to reproduce', 'Expected results',
+      'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
+      'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name',
+    ];
+    const problems = [];
+    required.forEach(name => {
+      const content = fieldContent(sections, desc, name);
+      if (!content) {
+        problems.push(`${name} is missing.`);
+      } else if (isMeaningless(content)) {
+        problems.push(`${name} has no meaningful content ("${content.replace(/\s+/g, ' ').slice(0, 40)}").`);
+      }
+    });
+    if (problems.length) {
+      checks.push({ id: 'S12', name: 'Required fields', status: 'fail', note: problems.join(' '), notes: problems });
+    } else {
+      checks.push({ id: 'S12', name: 'Required fields', status: 'pass', note: 'All required fields are present with meaningful content.' });
+    }
+  })();
+
+  // 13. Colour-contrast Actual Results details (colour-contrast issues only)
+  (function () {
+    const mapEntry = (findSummaryMapping(summary, checkpoint) || {}).entry || null;
+    if (!isColorContrastIssue(summary, checkpoint, mapEntry)) {
+      checks.push({ id: 'S13', name: 'Color contrast', status: 'na', note: 'Not a colour-contrast issue.' });
+      return;
+    }
+    const sections = splitSections(desc);
+    const actual = fieldContent(sections, desc, 'Actual results');
+    if (!actual) {
+      checks.push({ id: 'S13', name: 'Color contrast', status: 'fail', note: 'Actual Results is missing, so the colour-contrast details could not be found.' });
+      return;
+    }
+    if (/\[\s*placeholder/i.test(actual)) {
+      checks.push({
+        id: 'S13', name: 'Color contrast', status: 'fail',
+        note: 'Actual Results still contains an unfilled "[PLACEHOLDER … CONTRAST DETAILS]" marker — add the real foreground colour, background colour, and contrast ratio.',
+      });
+      return;
+    }
+    const hasColorValue = /#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/i.test(actual);
+    const hasFg = hasColorValue || /(foreground|text colou?r|link text colou?r|link colou?r|focus indicator colou?r|foreground colou?r)/i.test(actual);
+    const hasBg = hasColorValue || /(background colou?r|surrounding (?:text )?colou?r|adjacent colou?r|background)/i.test(actual);
+    const hasRatio = /(contrast ratio|ratio\s*[:=]|\b\d+(?:\.\d+)?\s*:\s*1\b)/i.test(actual);
+    const missing = [];
+    if (!hasFg) missing.push('Foreground / text colour');
+    if (!hasBg) missing.push('Background colour');
+    if (!hasRatio) missing.push('Contrast ratio');
+    if (missing.length) {
+      checks.push({
+        id: 'S13', name: 'Color contrast', status: 'fail',
+        note: 'Actual Results do not include ' + missing.join(', ') + '.',
+        notes: ['Colour-contrast details are missing from Actual Results.'].concat(missing.map(m => `Missing: ${m}`)),
+      });
+    } else {
+      checks.push({ id: 'S13', name: 'Color contrast', status: 'pass', note: 'Actual Results include the foreground colour, background colour, and contrast ratio.' });
+    }
+  })();
+
   return {
     platform: platform || 'Unknown',
     native,
@@ -465,4 +703,8 @@ function runChecks(row) {
     method,
     checks,
   };
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue };
 }

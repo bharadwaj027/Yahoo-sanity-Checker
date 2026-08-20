@@ -15,6 +15,9 @@ const CHECK_LABELS = {
   S8:  'Resource link',
   S9:  'Screen name',
   S10: 'Automation checks',
+  S11: 'Summary validation',
+  S12: 'Required fields',
+  S13: 'Color contrast',
 };
 const CHECK_KEYS = Object.keys(CHECK_LABELS);
 
@@ -294,10 +297,53 @@ function renderIssuesTab() {
 function detailRowHtml(i) {
   const fails = i.checks.filter(c => c.status === 'fail');
   const colspan = 7 + CHECK_KEYS.length;
-  const body = fails.length
-    ? fails.map(f => `<div class="detail-line"><span class="dl-key">${f.id} ${escapeHtml(CHECK_LABELS[f.id] || f.name)}</span>${reasonHtml(f)}</div>`).join('')
-    : `<div class="detail-line">All ${CHECK_KEYS.length} checks passed for this issue.</div>`;
-  return `<tr class="detail-row"><td colspan="${colspan}"><div class="detail-inner">${body}</div></td></tr>`;
+  const s11 = i.byId.S11;
+  const s11Block = (s11 && s11.detail) ? summaryDetailHtml(s11) : '';
+  const bodyFails = fails.filter(f => !(f.id === 'S11' && s11Block));
+  const body = bodyFails.length
+    ? bodyFails.map(f => `<div class="detail-line"><span class="dl-key">${f.id} ${escapeHtml(CHECK_LABELS[f.id] || f.name)}</span>${reasonHtml(f)}</div>`).join('')
+    : (fails.length ? '' : `<div class="detail-line">All ${CHECK_KEYS.length} checks passed for this issue.</div>`);
+  return `<tr class="detail-row"><td colspan="${colspan}"><div class="detail-inner">${validationBadgesHtml(i)}${s11Block}${body}</div></td></tr>`;
+}
+
+// The three new validations surfaced as an explicit status strip (req 4).
+const STATUS_WORD = { pass: 'PASS', fail: 'FAIL', na: 'NOT APPLICABLE' };
+function statusPill(check) {
+  const st = check ? check.status : 'na';
+  return `<span class="vstatus ${st}">${STATUS_WORD[st] || 'NOT APPLICABLE'}</span>`;
+}
+function validationBadgesHtml(i) {
+  const overall = i.flagged ? 'FAIL' : 'PASS';
+  return `
+    <div class="validation-strip">
+      <span class="vitem">Summary Validation: ${statusPill(i.byId.S11)}</span>
+      <span class="vitem">Required Fields Validation: ${statusPill(i.byId.S12)}</span>
+      <span class="vitem">Color Contrast Validation: ${statusPill(i.byId.S13)}</span>
+      <span class="vitem overall">Overall Status: <span class="vstatus ${overall === 'PASS' ? 'pass' : 'fail'}">${overall}</span></span>
+    </div>`;
+}
+
+// Structured Old / New summary comparison. The Expected Results / Actual Results
+// / Remediation Recommendation are shown only when the issue's CSV values don't
+// match the expected mapping values (check.detail.fields).
+function summaryDetailHtml(check) {
+  const d = check.detail;
+  const row = (label, val) => `<div class="cmp-row"><span class="cmp-label">${escapeHtml(label)}</span><span class="cmp-val">${escapeHtml(val || '(none)')}</span></div>`;
+  const pre = (label, val) => `<div class="cmp-row"><span class="cmp-label">${escapeHtml(label)}</span><pre class="cmp-pre">${escapeHtml(val || '(none provided)')}</pre></div>`;
+  const verdict = check.status === 'pass'
+    ? '<span class="vstatus pass">PASS</span> Summary matches the expected new summary.'
+    : '<span class="vstatus fail">FAIL</span> Summary needs to be updated.';
+  const fieldRows = (d.fields || []).map(f => pre(f.label + ' (expected)', f.expected)).join('');
+  return `
+    <div class="detail-line summary-cmp">
+      <span class="dl-key">S11 ${escapeHtml(CHECK_LABELS.S11)}</span>
+      <div class="cmp-body">
+        <div class="cmp-verdict">${verdict}</div>
+        ${row('Old (AXE) summary', d.oldSummary)}
+        ${row('Expected (new) summary', d.newSummary)}
+        ${fieldRows}
+      </div>
+    </div>`;
 }
 
 // ── Tab: Failed checks ────────────────────────────────────────
