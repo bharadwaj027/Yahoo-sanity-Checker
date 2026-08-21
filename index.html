@@ -61,15 +61,20 @@
     <!-- summary stat cards -->
     <div class="stat-grid" id="statGrid"></div>
 
-    <!-- per-check pass rates -->
-    <h2 class="section-title">Check pass rates</h2>
-    <div class="rate-grid" id="rateGrid"></div>
+    <!-- per-check pass rates (collapsible, collapsed by default) -->
+    <section class="rates-section is-collapsed" id="ratesSection">
+      <button class="section-toggle" id="ratesToggle" type="button" aria-expanded="false" aria-controls="rateGrid">
+        <span class="section-toggle-icon" aria-hidden="true">▸</span>
+        <span class="section-title">Check pass rates</span>
+      </button>
+      <div class="rate-grid" id="rateGrid" hidden></div>
+    </section>
 
     <!-- tabs -->
     <nav class="tab-bar" id="tabBar">
-      <button class="tab-btn active" data-tab="issues" type="button">Issue details</button>
+      <button class="tab-btn active" data-tab="pages" type="button">Page-wise details</button>
+      <button class="tab-btn" data-tab="issues" type="button">Issue details</button>
       <button class="tab-btn" data-tab="failed" type="button">Failed checks</button>
-      <button class="tab-btn" data-tab="pages" type="button">Page-wise details</button>
       <button class="tab-btn" data-tab="findings" type="button">Key findings</button>
     </nav>
 
