@@ -288,6 +288,64 @@ function runTests() {
   r = runChecks(row({ Summary: 'Link contrast is not at least 3:1 with surrounding text - Home page (nav link)', Checkpoint: '', Description: serialize(s2) }));
   assertStatus('S13 detected via summary wording', r, 'S13', 'fail');
 
+  // ── 3.3.2 (Labels or Instructions) must not reference Assistive Technology.
+  //    Folded into S5 (Context / Test Method) and S6 (Step 1). ────────
+  (function () {
+    // Clean 3.3.2 issue (no AT in Context or steps) → both S5 and S6 pass
+    let s = fullSections();
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Summary: 'Label is missing - Home page (search field)', Description: serialize(s) }));
+    assertStatus('3.3.2 clean → S5', r, 'S5', 'pass');
+    assertStatus('3.3.2 clean → S6', r, 'S6', 'pass');
+
+    // AT in the Test Method line → S5 fail carrying the 3.3.2 message
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: NVDA on Windows';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 AT in Test Method → S5', r, 'S5', 'fail');
+    record('S5 carries the 3.3.2 Context message', (chk(r, 'S5').note || '').includes('Context should not have Assistive Technology'), chk(r, 'S5').note);
+
+    // Assistive Technology line in Context → S5 fail carrying the 3.3.2 message
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nAssistive Technology: NVDA\nTest Method: Chrome on Windows';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 AT line in Context → S5', r, 'S5', 'fail');
+    record('S5 carries the 3.3.2 Context message (AT line)', (chk(r, 'S5').note || '').includes('Context should not have Assistive Technology'), chk(r, 'S5').note);
+
+    // Switch Access reference in the Test Method → S5 fail
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: Switch Access navigation';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 Switch Access in Context → S5', r, 'S5', 'fail');
+
+    // "Turn on screen reader" in Step 1 → S6 fail carrying the 3.3.2 message
+    s = fullSections();
+    s['Steps to reproduce'] = '1. Turn on the screen reader (NVDA).\n2. Navigate to the field.\n3. Observe the issue.';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 "turn on screen reader" Step 1 → S6', r, 'S6', 'fail');
+    record('S6 carries the 3.3.2 Step message', (chk(r, 'S6').note || '').includes('Step 1 should not start with'), chk(r, 'S6').note);
+
+    // AT enabled in a later step (Enable VoiceOver) → S6 fail
+    s = fullSections();
+    s['Steps to reproduce'] = '1. Open the above-mentioned URL.\n2. Enable VoiceOver.\n3. Observe the issue.';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 AT in a later step → S6', r, 'S6', 'fail');
+
+    // Checkpoint as the full WCAG label + AT step → still detected → S6 fail
+    s = fullSections();
+    s['Steps to reproduce'] = '1. Enable TalkBack.\n2. Observe.';
+    r = runChecks(row({ Checkpoint: 'Labels or Instructions (3.3.2.a)', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 from WCAG label + AT step → S6', r, 'S6', 'fail');
+
+    // Scope: a NON-3.3.2 screen-reader issue keeps AT normally — the 3.3.2 rule
+    // must NOT fire (no 3.3.2 message in S5 or S6).
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nAssistive Technology: NVDA\nTest Method: NVDA on Windows';
+    s['Steps to reproduce'] = '1. Turn on the screen reader (NVDA).\n2. Navigate to the field.\n3. Observe.';
+    r = runChecks(row({ Checkpoint: '4.1.2', Method: 'Manual', Summary: 'Button does not have a name - Home page (btn)', Description: serialize(s) }));
+    record('non-3.3.2: no 3.3.2 Context message in S5', !((chk(r, 'S5').note || '').includes('Context should not have Assistive Technology')), chk(r, 'S5').note);
+    record('non-3.3.2: no 3.3.2 Step message in S6', !((chk(r, 'S6').note || '').includes('Step 1 should not start with')), chk(r, 'S6').note);
+  })();
+
   // ── Regression — every check still produces a result ─────────────
   r = runChecks(row({ Description: serialize(fullSections()) }));
   ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13'].forEach(id => {

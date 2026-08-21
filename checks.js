@@ -21,6 +21,12 @@ const PLACEHOLDER_PATTERNS = [
   /\btbd\b/i,
 ];
 
+// Assistive-technology reference matcher. Used by the 3.3.2 (Labels or
+// Instructions) rule folded into S5 (Context) and S6 (Step 1): a 3.3.2 issue
+// needs no AT, so any of these terms in the Context/Test Method or the test
+// steps is an error.
+const AT_REFERENCE_RE = /screen[\s-]?reader|talk\s?back|voice\s?over|\bnvda\b|\bjaws\b|\bnarrator\b|switch\s?access|voice\s?control|assistive\s+technolog/i;
+
 function normalizePlatform(rawPlatform) {
   if (!rawPlatform) return null;
   const key = rawPlatform.trim().toLowerCase();
@@ -319,6 +325,10 @@ function runChecks(row) {
   const attachments = String(row.Attachments || '').trim();
   const url = String(row.URL || '').trim();
   const checkpoint = String(row.Checkpoint || '').trim();
+  // 3.3.2 (Labels or Instructions) — tolerant of the full WCAG-label form, e.g.
+  // "Labels or Instructions (3.3.2.a)". Such issues must not reference Assistive
+  // Technology (enforced in S5 for the Context and S6 for the steps).
+  const is332 = /\b3\.3\.2\b/.test(checkpoint);
 
   const rawPlatform = extractField(desc, 'Platform:');
   const platform = normalizePlatform(rawPlatform);
@@ -552,6 +562,12 @@ function runChecks(row) {
       if (hasPlaceholder(val)) issues.push(`${label} still has placeholder text: "${val}".`);
     });
 
+    // 3.3.2 (Labels or Instructions) needs no Assistive Technology — flag any AT
+    // referenced anywhere in the Context, including the Test Method line.
+    if (is332 && AT_REFERENCE_RE.test(contextText)) {
+      issues.push('Context should not have Assistive Technology, also in the Test Method (e.g. NVDA, VoiceOver, TalkBack).');
+    }
+
     if (issues.length) {
       checks.push({ id: 'S5', name: 'Context structure', status: 'fail', note: issues.join(' '), notes: issues });
     } else {
@@ -601,6 +617,14 @@ function runChecks(row) {
     }
     if (native && mentionsUrl) {
       mismatch = (mismatch ? mismatch + ' ' : '') + 'Step 1 mentions a "URL", which does not apply to app testing — it looks copied from a Web template.';
+    }
+
+    // 3.3.2 (Labels or Instructions) needs no Assistive Technology: no test step
+    // should enable it, whatever the Test Method classified the issue as. This
+    // overrides the issue-type expectation above.
+    if (is332 && AT_REFERENCE_RE.test(steps.map(s => s.text).join('\n'))) {
+      ok = false;
+      note = 'Step 1 should not start with "Turn on screen reader".';
     }
 
     if (!ok || mismatch) {
