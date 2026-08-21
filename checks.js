@@ -333,7 +333,13 @@ function runChecks(row) {
   // there only, so a stray "Test Method:" in Environment can't stand in for a
   // missing Context one, and classification scans the whole Context block.
   const contextText = extractBlock(desc, 'Context:', ['Steps to reproduce:', 'Steps to Reproduce:']) || '';
-  const testMethod = extractField(contextText, 'Test Method:');
+  // Allow either an explicit "Test Method:" labelled line or a final unlabelled
+  // descriptor line in the Context block. Some reporters include the label,
+  // others just write the descriptor as the last Context line; accept both.
+  const labeledTestMethod = extractField(contextText, 'Test Method:');
+  const lastUnlabelledDescriptor = contextText.split('\n').map(l => l.trim()).filter(Boolean).reverse()
+    .find(l => !/^[A-Za-z][A-Za-z ]{1,40}?\s*:/.test(l)) || '';
+  const testMethod = labeledTestMethod || lastUnlabelledDescriptor;
   const screenName = extractField(desc, 'Screen Name:');
   const platformUrl = extractField(desc, 'Platform URL:');
   const appVersion = extractField(desc, '(?:iOS|Android|iOS\\/Android)?\\s*(?:[Aa]pp\\s+)?[Vv]ersion tested:');
@@ -344,11 +350,9 @@ function runChecks(row) {
 
   const steps = getStepsList(desc);
   const step1 = steps.find(s => s.num === 1);
-  // Classify from the Test Method descriptor: the labelled line if present, else
-  // the last unlabelled Context line (the descriptor missing its label). Field
-  // lines like "Assistive Technology:" are metadata, not the descriptor.
-  const tmDescriptor = testMethod || contextText.split('\n').map(l => l.trim())
-    .filter(Boolean).reverse().find(l => !/^[A-Za-z][A-Za-z ]{1,40}?\s*:/.test(l)) || '';
+  // Classify from the Test Method descriptor: prefer the labelled Test Method
+  // line if present, otherwise fall back to the last unlabelled Context line.
+  const tmDescriptor = testMethod || '';
   let issueType = determineIssueType(tmDescriptor, platform);
   // Fallback: the Test Method didn't name a type, but the Assistive Technology
   // line names a screen reader → treat it as a screen-reader issue. (S5 still
@@ -485,7 +489,7 @@ function runChecks(row) {
       // Web screen-reader AT expectations are handled by the platform-tag block below.
     }
 
-    if (!testMethod) issues.push('The Context section does not end with a "Test Method:" line.');
+    if (!testMethod) issues.push('The Context section does not end with a Test Method descriptor (labelled or unlabelled).');
 
     // Desktop Web only: the Summary prefix declares which environment(s) were
     // tested, and the Context must match — Windows→Windows/Chrome,
