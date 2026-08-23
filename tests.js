@@ -297,6 +297,14 @@ function runTests() {
       return;
     }
     record('S14 reference data loaded', NATIVE_RECOMMENDATIONS.length > 0, 'entries=' + NATIVE_RECOMMENDATIONS.length);
+
+    // normRec tolerates CSV doubled-quote escaping ("" == ") so a ticket copied
+    // with escaped quotes still matches the authoritative reference.
+    if (typeof normRec === 'function') {
+      record('normRec collapses doubled quotes', normRec('setContentDescription(""Gesture Name"")') === normRec('setContentDescription("Gesture Name")'), 'doubled-quote normalization');
+      record('normRec keeps distinct text distinct', normRec('foo "bar"') !== normRec('foo "baz"'), 'sanity: different text stays different');
+    }
+
     const iosE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'iOS' && e.issueDescription);
     const andE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.issueDescription);
 
@@ -320,9 +328,33 @@ function runTests() {
     record('S14 native fixture classified iOS', chk(rr, 'S14') && (chk(rr, 'S14').detail || {}).platform === 'iOS', (chk(rr,'S14')||{}).note);
     assertStatus('S14 iOS exact recommendation', rr, 'S14', 'pass');
 
-    // iOS — modified (substantive) recommendation → FAIL
-    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation + '\nThis extra sentence changes the substance.'));
-    assertStatus('S14 iOS modified recommendation', rr, 'S14', 'fail');
+    // iOS — authoritative recommendation + an appended per-issue note → PASS
+    // (the field may START WITH the reference; trailing additions are allowed).
+    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation + '\n\nNote: This is applicable to the following screens\n- Inbox\n- Settings'));
+    assertStatus('S14 iOS recommendation + trailing note (prefix match)', rr, 'S14', 'pass');
+
+    // iOS — a LEADING addition before the reference → still FAIL (must start with it)
+    rr = runChecks(nrRow(IOS, iosE, 'Note: see below.\n\n' + iosE.recommendation));
+    assertStatus('S14 iOS leading text before reference', rr, 'S14', 'fail');
+
+    // Dropping a leading structural header line (e.g. "HOW TO FIX: Swift:") still
+    // matches — header labels are ignored on both sides.
+    (function () {
+      const noHeader = iosE.recommendation.replace(/^HOW TO FIX[^\n]*:\r?\n/i, '');
+      if (noHeader !== iosE.recommendation) {
+        const rH = runChecks(nrRow(IOS, iosE, noHeader));
+        assertStatus('S14 iOS recommendation with leading header dropped', rH, 'S14', 'pass');
+      }
+    })();
+
+    // iOS — a substantive change WITHIN the recommendation → FAIL (a mid-text edit
+    // breaks the prefix; only trailing additions are tolerated).
+    (function () {
+      const mid = Math.floor(iosE.recommendation.length / 2);
+      const modified = iosE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + iosE.recommendation.slice(mid);
+      rr = runChecks(nrRow(IOS, iosE, modified));
+      assertStatus('S14 iOS modified recommendation (mid-text)', rr, 'S14', 'fail');
+    })();
 
     // iOS — Android recommendation pasted in → FAIL
     rr = runChecks(nrRow(IOS, iosE, andE.recommendation));
@@ -343,8 +375,12 @@ function runTests() {
     record('S14 native fixture classified Android', (chk(rr, 'S14').detail || {}).platform === 'Android', (chk(rr,'S14')||{}).note);
     assertStatus('S14 Android exact recommendation', rr, 'S14', 'pass');
 
-    rr = runChecks(nrRow(AND, andE, andE.recommendation + ' extra words here'));
-    assertStatus('S14 Android modified recommendation', rr, 'S14', 'fail');
+    (function () {
+      const mid = Math.floor(andE.recommendation.length / 2);
+      const modified = andE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + andE.recommendation.slice(mid);
+      rr = runChecks(nrRow(AND, andE, modified));
+      assertStatus('S14 Android modified recommendation (mid-text)', rr, 'S14', 'fail');
+    })();
 
     rr = runChecks(nrRow(AND, andE, iosE.recommendation));
     assertStatus('S14 Android with iOS recommendation', rr, 'S14', 'fail');

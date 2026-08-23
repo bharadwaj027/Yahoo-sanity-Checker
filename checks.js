@@ -357,16 +357,24 @@ function normCheckpoint(s) {
 // non-breaking spaces) to their ASCII equivalents so a ticket typed with plain
 // quotes still matches; collapses runs of spaces/tabs; trims each line; collapses
 // blank lines.
+// Structural header labels reviewers often keep or drop when copying a
+// recommendation (no remediation substance). Removed from both sides so their
+// presence/absence doesn't affect the match. Whole-line match: "HOW TO FIX:",
+// "HOW TO FIX: Swift:/SwiftUI:/Java:", and a bare "Using JAVA:/XML:/Swift:" etc.
+const REC_HEADER_LINE_RE = /^(?:how to fix\b[^\n]*:|using\s+(?:java|kotlin|xml|swift|swiftui)\s*:)$/i;
 function normRec(s) {
   return String(s || '')
     .replace(/\r\n?/g, '\n')
     .replace(/[‘’‚‛′]/g, "'")   // curly / prime single quotes
     .replace(/[“”„‟″]/g, '"')   // curly / prime double quotes
+    .replace(/"{2,}/g, '"')      // collapse doubled quotes (CSV "" escaping artifact)
     .replace(/[‒–—―−]/g, '-')   // en/em/figure dashes, minus
     .replace(/…/g, '...')                            // ellipsis
     .replace(/[   ]/g, ' ')                // non-breaking / narrow spaces
     .replace(/[ \t]+/g, ' ')
-    .split('\n').map(l => l.trim()).join('\n')
+    .split('\n').map(l => l.trim())
+    .filter(l => !REC_HEADER_LINE_RE.test(l))         // drop boilerplate header labels
+    .join('\n')
     .replace(/\n{2,}/g, '\n')
     .trim();
 }
@@ -889,10 +897,11 @@ function runChecks(row) {
 
   // 14. Native recommendation vs authoritative Excel reference (native only).
   // Deterministic lookup: platform → tab → checkpoint + Summary(Issue Description)
-  // → Recommendation to fix, then an exact (formatting-normalised) comparison
-  // against the audit's Remediation Recommendation. No semantic matching, no
-  // cross-platform fallback, no closest-match; a broken mapping is reported as an
-  // ERROR rather than guessed. "RULE"/"BACKGROUND" must not appear in the field.
+  // → Recommendation to fix, then a formatting-normalised comparison against the
+  // audit's Remediation Recommendation — the field must EQUAL or START WITH an
+  // authoritative reference (trailing per-issue notes are allowed). No semantic
+  // matching, no cross-platform fallback, no closest-match; a broken mapping is
+  // reported as an ERROR rather than guessed. "RULE"/"BACKGROUND" must not appear.
   (function () {
     if (!native) {
       checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'Only applies to Native app issues.' });
@@ -946,17 +955,21 @@ function runChecks(row) {
       return;
     }
     const na = normRec(actual);
+    // The authoritative recommendation must be present verbatim, but the ticket
+    // may append extra per-issue content (e.g. a "Note: applicable screens"
+    // list). So a reference matches when the field EQUALS it or STARTS WITH it.
+    const refMatches = (rec) => { const nr = normRec(rec); return na === nr || na.startsWith(nr); };
     if (pinned) {
       // Summary confidently identified the exact row → compare against it only.
-      const ok = normRec(pinned.recommendation) === na;
+      const ok = refMatches(pinned.recommendation);
       checks.push(ok
         ? { id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') }
         : { id: 'S14', name: 'Native recommendation', status: 'fail', note: `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') });
       return;
     }
-    // Summary didn't identify a specific row → accept a verbatim match against any
+    // Summary didn't identify a specific row → accept a match against any
     // authoritative row for this platform + checkpoint.
-    const match = rows.find(r => normRec(r.recommendation) === na);
+    const match = rows.find(r => refMatches(r.recommendation));
     if (match) {
       checks.push({ id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches an authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(match.recommendation, match.issueDescription, 'any') });
     } else {
