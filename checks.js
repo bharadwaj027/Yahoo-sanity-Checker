@@ -6,7 +6,10 @@
 const PLATFORM_MAP = {
   'web': 'Web',
   'mobile web': 'Mobile Web',
+  'ios mobile web': 'Mobile Web',
   'native app': 'Native App',
+  'native ios': 'Native iOS',
+  'native ios mobile app': 'Native iOS',
   'native android tablet app': 'Android Tablet',
   'native android mobile app': 'Android Mobile',
   'native ipad tablet app': 'iPad',
@@ -21,6 +24,12 @@ const PLACEHOLDER_PATTERNS = [
   /\btbd\b/i,
 ];
 
+// Assistive-technology reference matcher. Used by the 3.3.2 (Labels or
+// Instructions) rule folded into S5 (Context) and S6 (Step 1): a 3.3.2 issue
+// needs no AT, so any of these terms in the Context/Test Method or the test
+// steps is an error.
+const AT_REFERENCE_RE = /screen[\s-]?reader|talk\s?back|voice\s?over|\bnvda\b|\bjaws\b|\bnarrator\b|switch\s?access|voice\s?control|assistive\s+technolog/i;
+
 function normalizePlatform(rawPlatform) {
   if (!rawPlatform) return null;
   const key = rawPlatform.trim().toLowerCase();
@@ -28,7 +37,7 @@ function normalizePlatform(rawPlatform) {
 }
 
 function isNative(platform) {
-  return ['Native App', 'Android Tablet', 'Android Mobile', 'iPad', 'iPhone'].includes(platform);
+  return ['Native App', 'Native iOS', 'Android Tablet', 'Android Mobile', 'iPad', 'iPhone'].includes(platform);
 }
 
 function extractField(desc, label) {
@@ -424,6 +433,62 @@ function findNativeRecommendation(platformKind, checkpoint, summary) {
   return { status: 'found', rows, pinned: pinNativeRow(rows, summary) };
 }
 
+const CHECKPOINT_TYPES = {
+  'Screen Reader': ['1.1.1', '1.3.1', '2.4.4', '2.4.6', '2.5.3', '3.1.1', '3.3.2.b', '4.1.2', '4.1.3'],
+  'Visual': ['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.3.3', '1.3.4', '1.3.5', '1.4.2', '1.4.4', '1.4.5', '1.4.10', '1.4.13', '2.2.1', '2.2.2', '2.3.1', '2.4.2', '2.4.5', '2.5.1', '2.5.2', '2.5.4', '2.5.7', '2.5.8', '3.1.2', '3.2.6', '3.3.2.a', '3.3.2.c', '3.3.3', '3.3.4', '3.3.7', '3.3.8'],
+  'Color': ['1.4.1', '1.4.3', '1.4.11'],
+  'Text Spacing': ['1.4.12'],
+  'Keyboard': ['2.1.1', '2.1.2', '2.1.4', '2.4.1', '2.4.3', '2.4.7', '2.4.11', '3.2.1', '3.2.2'],
+};
+
+function classifyCheckpoint(checkpoint) {
+  const value = String(checkpoint || '').trim().toLowerCase();
+  if (!value) return null;
+  const idMatch = value.match(/\b\d+\.\d+\.\d+(?:\.[a-z])?\b/);
+  const checkpointId = idMatch ? idMatch[0] : value;
+  const matches = cp => checkpointId === cp || checkpointId.startsWith(cp + '.');
+  if (CHECKPOINT_TYPES['Screen Reader'].some(matches)) return 'Screen Reader';
+  if (matches('2.1.1') && /action cannot be performed with a screen reader turned on/i.test(value)) return 'Screen Reader';
+  for (const type of ['Visual', 'Color', 'Text Spacing', 'Keyboard']) {
+    if (CHECKPOINT_TYPES[type].some(matches)) return type;
+  }
+  return null;
+}
+
+function expectedTestMethod(checkpointType, platform) {
+  const methods = {
+    'Screen Reader': {
+      Web: 'Chrome on windows using NVDA Assistive Technology',
+      'Mobile Web': 'Safari on iOS mobile using VoiceOver',
+      'Native iOS': 'iOS using VoiceOver',
+    },
+    Color: {
+      Web: 'Chrome on windows using Deque color contrast Analyser',
+      'Mobile Web': 'Safari on iOS mobile using Deque color contrast Analyser',
+      'Native iOS': 'iOS using Deque color contrast Analyser',
+    },
+    Visual: {
+      Web: 'Chrome on windows',
+      'Mobile Web': 'Safari on iOS mobile',
+      'Native iOS': 'iOS',
+    },
+    'Text Spacing': {
+      Web: 'Chrome on windows using Text spacing extension',
+      'Mobile Web': 'Safari on iOS mobile using Text spacing extension',
+    },
+    Keyboard: {
+      Web: 'Chrome on windows using keyboard',
+    },
+  };
+  return methods[checkpointType] ? methods[checkpointType][platform] || null : null;
+}
+
+function checkpointPlatform(platform) {
+  if (platform === 'Web' || platform === 'Mobile Web') return platform;
+  if (platform === 'iPad' || platform === 'iPhone') return 'Native iOS';
+  return platform || 'Unknown';
+}
+
 function runChecks(row) {
   const desc = String(row.Description || '');
   const summary = String(row.Summary || '');
@@ -432,6 +497,12 @@ function runChecks(row) {
   const attachments = String(row.Attachments || '').trim();
   const url = String(row.URL || '').trim();
   const checkpoint = String(row.Checkpoint || '').trim();
+  const csvAssistiveTechnology = String(row['Assistive technology'] || '').trim();
+  const checkpointType = classifyCheckpoint(checkpoint);
+  // 3.3.2 (Labels or Instructions) — tolerant of the full WCAG-label form, e.g.
+  // "Labels or Instructions (3.3.2.a)". Such issues must not reference Assistive
+  // Technology (enforced in S5 for the Context and S6 for the steps).
+  const is332 = /\b3\.3\.2\b/.test(checkpoint);
 
   const rawPlatform = extractField(desc, 'Platform:');
   const platform = normalizePlatform(rawPlatform);
@@ -551,6 +622,7 @@ function runChecks(row) {
   // 5. Context — Structure (+ 5a placeholder detection)
   (function () {
     const issues = [];
+    if (!checkpoint) issues.push('Checkpoint is missing, so Context and Test Method rules cannot be classified.');
     if (!rawPlatform) issues.push('The Platform line is missing.');
     
     if (!native) {
@@ -599,6 +671,35 @@ function runChecks(row) {
     }
 
     if (!testMethod) issues.push('The Context section does not end with a "Test Method:" line.');
+
+    // Checkpoint classification is authoritative for AT and Test Method rules.
+    // These checks deliberately do not use issueType, which is inferred from
+    // the submitted Test Method for the older step-consistency validation.
+    if (checkpointType) {
+      const contextMetadata = contextText.split('\n').filter(line => !/^\s*Test Method\s*:/i.test(line)).join('\n');
+      const namedAT = /\bnvda\b|\bjaws\b|\bnarrator\b|talk\s?back|voice\s?over/i.test(contextMetadata);
+      const labelledAT = contextMetadata.match(/(?:assistive technology|screen reader)\s*:\s*([^\n]+)/i);
+      const contextHasAT = namedAT || !!(labelledAT && !isMeaningless(labelledAT[1]));
+      const csvHasAT = !!csvAssistiveTechnology && !/^[\s,;"']+$/.test(csvAssistiveTechnology) && !isMeaningless(csvAssistiveTechnology);
+      if (checkpointType === 'Screen Reader') {
+        if (!contextHasAT) issues.push('Assistive Technology is required in the Context for Screen Reader checkpoints.');
+      } else if (contextHasAT || csvHasAT) {
+        issues.push(`Assistive Technology must not be provided in the Context for ${checkpointType} checkpoints.`);
+      }
+      if (checkpointType !== 'Screen Reader' && AT_REFERENCE_RE.test(testMethod || '')) {
+        issues.push(`Assistive Technology must not be used in the Test Method for ${checkpointType} checkpoints.`);
+      }
+
+      const methodPlatform = checkpointPlatform(platform);
+      const expected = expectedTestMethod(checkpointType, methodPlatform);
+      if (expected) {
+        if (testMethod !== expected) {
+          issues.push(`Invalid Test Method for ${checkpointType} checkpoint on ${methodPlatform}. Expected: "Test Method: ${expected}".`);
+        }
+      } else {
+        issues.push(`No Test Method rule is currently defined for ${checkpointType} checkpoints on ${methodPlatform}. Do not infer or invent a Test Method.`);
+      }
+    }
 
     // Desktop Web only: the Summary prefix declares which environment(s) were
     // tested, and the Context must match — Windows→Windows/Chrome,
@@ -665,6 +766,12 @@ function runChecks(row) {
       if (hasPlaceholder(val)) issues.push(`${label} still has placeholder text: "${val}".`);
     });
 
+    // 3.3.2 (Labels or Instructions) needs no Assistive Technology — flag any AT
+    // referenced anywhere in the Context, including the Test Method line.
+    if (is332 && AT_REFERENCE_RE.test(contextText)) {
+      issues.push('Context should not have Assistive Technology, also in the Test Method (e.g. NVDA, VoiceOver, TalkBack).');
+    }
+
     if (issues.length) {
       checks.push({ id: 'S5', name: 'Context structure', status: 'fail', note: issues.join(' '), notes: issues });
     } else {
@@ -714,6 +821,14 @@ function runChecks(row) {
     }
     if (native && mentionsUrl) {
       mismatch = (mismatch ? mismatch + ' ' : '') + 'Step 1 mentions a "URL", which does not apply to app testing — it looks copied from a Web template.';
+    }
+
+    // 3.3.2 (Labels or Instructions) needs no Assistive Technology: no test step
+    // should enable it, whatever the Test Method classified the issue as. This
+    // overrides the issue-type expectation above.
+    if (is332 && AT_REFERENCE_RE.test(steps.map(s => s.text).join('\n'))) {
+      ok = false;
+      note = 'Step 1 should not start with "Turn on screen reader".';
     }
 
     if (!ok || mismatch) {
@@ -809,18 +924,17 @@ function runChecks(row) {
   // The audit type is the tool's existing deterministic platform classification
   // (`native`), derived from the Environment "Platform:" line — never inferred
   // from issue wording, remediation, WCAG criterion, or the presence of a field.
-  //   • Web:    Code Snippet REQUIRED; Resource Link REQUIRED.
-  //   • Native: Code Snippet NOT required; "Resource Link" OR "Reference"
-  //             satisfies the link requirement (at least one, non-empty).
+  //   • Web:    Code Snippet REQUIRED; Resource Link OR Reference REQUIRED.
+  //   • Native: Code Snippet NOT required; Resource Link OR Reference REQUIRED.
   (function () {
     const sections = splitSections(desc);
     const required = native
       ? ['Environment', 'Context', 'Steps to reproduce', 'Expected results',
          'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
-         'Remediation Recommendation', 'Screen Name']
+        'Remediation Recommendation', 'Screen Name']
       : ['Environment', 'Context', 'Steps to reproduce', 'Expected results',
          'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
-         'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name'];
+        'Code Snippet', 'Remediation Recommendation', 'Screen Name'];
     const problems = [];
     required.forEach(name => {
       // Remediation Recommendation: structural validation only (see the helper).
@@ -836,9 +950,9 @@ function runChecks(row) {
         problems.push(`${name} has no meaningful content ("${content.replace(/\s+/g, ' ').slice(0, 40)}").`);
       }
     });
-    // Native only: the link requirement is met by Resource Link OR Reference.
-    // Neither is preferred; at least one must be present and non-empty.
-    if (native) {
+    // S12 accepts either link label on every platform. At least one must have
+    // non-empty content; S8 separately validates the Web label convention.
+    {
       const rlOk = !!fieldContent(sections, desc, 'Resource Link').trim();
       const refOk = !!referenceFieldContent(desc).trim();
       if (!rlOk && !refOk) {
@@ -1005,6 +1119,7 @@ function runChecks(row) {
     platform: platform || 'Unknown',
     native,
     issueType,
+    checkpointType,
     method,
     checks,
   };
@@ -1014,5 +1129,6 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue,
     resolveNativePlatform, normCheckpoint, normRec, findNativeRecommendation,
+    classifyCheckpoint, expectedTestMethod,
   };
 }

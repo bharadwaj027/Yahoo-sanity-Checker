@@ -23,7 +23,7 @@ const CHECK_LABELS = {
 const CHECK_KEYS = Object.keys(CHECK_LABELS);
 
 let allIssues = [];        // processed issues
-let currentTab = 'issues';
+let currentTab = 'pages';
 const expanded = new Set(); // issueIds whose detail row is open
 
 // ── element refs ──────────────────────────────────────────────
@@ -148,6 +148,18 @@ tabBar.addEventListener('click', e => {
 });
 [platformFilter, methodFilter, statusFilter].forEach(el => el.addEventListener('change', renderTab));
 searchBox.addEventListener('input', renderTab);
+
+// ── "Check pass rates" expand / collapse (collapsed by default) ────
+const ratesToggle  = document.getElementById('ratesToggle');
+const ratesSection = document.getElementById('ratesSection');
+if (ratesToggle && ratesSection) {
+  ratesToggle.addEventListener('click', () => {
+    const willExpand = ratesToggle.getAttribute('aria-expanded') !== 'true';
+    ratesToggle.setAttribute('aria-expanded', String(willExpand));
+    ratesSection.classList.toggle('is-collapsed', !willExpand);
+    rateGrid.hidden = !willExpand;
+  });
+}
 
 // ── filtering ─────────────────────────────────────────────────
 function getFiltered() {

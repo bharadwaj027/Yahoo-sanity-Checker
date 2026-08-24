@@ -245,11 +245,12 @@ function runTests() {
     record('S12 web: names missing Code Snippet',
       (chk(rr, 'S12').note || '').includes('Code Snippet'), chk(rr, 'S12').note);
 
-    // Web control: Reference does NOT substitute for Resource Link
+    // Web: Reference substitutes for Resource Link in S12. S8 may still flag
+    // the label convention separately for Web audits.
     w = fullSections(); delete w['Resource Link'];
     d = serialize(w) + '\n\nReference:\nhttps://example.com/ref';
     rr = runChecks(row({ Description: d }));
-    assertStatus('S12 web: Reference does not satisfy Resource Link', rr, 'S12', 'fail');
+    assertStatus('S12 web: Reference satisfies the link requirement', rr, 'S12', 'pass');
   })();
 
   // ── S13 — Colour contrast ────────────────────────────────────────
@@ -480,6 +481,115 @@ function runTests() {
     // Web issue → NA (does not apply)
     rr = runChecks(row({ Description: serialize(fullSections()) }));
     assertStatus('S14 web issue is NA', rr, 'S14', 'na');
+  })();
+
+  // ── Checkpoint-owned Context / Test Method validation ────────────
+  (function () {
+    function typedSections(platform, testMethod, at) {
+      const s = fullSections();
+      s['Context'] = `Platform: ${platform}\nOperating System: ${platform === 'Mobile Web' ? 'iOS' : 'Windows 11'}\nBrowser: ${platform === 'Mobile Web' ? 'Safari' : 'Chrome 120'}\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${testMethod}`;
+      return serialize(s);
+    }
+    function s5(checkpoint, platform, testMethod, at) {
+      return chk(runChecks(row({ Checkpoint: checkpoint, Description: typedSections(platform, testMethod, at) })), 'S5');
+    }
+
+    record('checkpoint classifier uses Checkpoint, not Test Method', classifyCheckpoint('1.4.10') === 'Visual', classifyCheckpoint('1.4.10'));
+    record('checkpoint label with subtype is classified', classifyCheckpoint('Keyboard Navigation (2.1.1.a)') === 'Keyboard', classifyCheckpoint('Keyboard Navigation (2.1.1.a)'));
+    record('missing Checkpoint is reported', s5('', 'Web', 'Chrome on windows using keyboard', '').note.includes('Checkpoint is missing'), s5('', 'Web', 'Chrome on windows using keyboard', '').note);
+    record('2.1.1 defaults to Keyboard', classifyCheckpoint('2.1.1') === 'Keyboard', classifyCheckpoint('2.1.1'));
+    record('2.1.1 exception is Screen Reader', classifyCheckpoint('2.1.1 - Action cannot be performed with a screen reader turned on') === 'Screen Reader', classifyCheckpoint('2.1.1 - Action cannot be performed with a screen reader turned on'));
+
+    assertStatus('Screen Reader Web valid', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows using NVDA Assistive Technology', 'NVDA') })), 'S5', 'pass');
+    assertStatus('Screen Reader Web missing AT fails', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows', '') })), 'S5', 'fail');
+    record('Screen Reader missing AT message', s5('1.3.1', 'Web', 'Chrome on windows', '').note.includes('Assistive Technology is required'), s5('1.3.1', 'Web', 'Chrome on windows', '').note);
+    assertStatus('Screen Reader iOS Mobile Web valid', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Mobile Web', 'Safari on iOS mobile using VoiceOver', 'VoiceOver') })), 'S5', 'pass');
+    assertStatus('Screen Reader Native iOS valid', runChecks(row({ Checkpoint: '1.3.1', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iOS\nOperating System: iOS 17\nDevice Model: iPhone\nAssistive Technology: VoiceOver\nTest Method: iOS using VoiceOver' })) })), 'S5', 'pass');
+    assertStatus('Screen Reader correct AT but wrong method fails', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Screen Reader placeholder AT fails', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows using NVDA Assistive Technology', 'N/A') })), 'S5', 'fail');
+
+    assertStatus('Color Web valid', runChecks(row({ Checkpoint: '1.4.3', Description: typedSections('Web', 'Chrome on windows using Deque color contrast Analyser', '') })), 'S5', 'pass');
+    assertStatus('Color rejects AT', runChecks(row({ Checkpoint: '1.4.3', Description: typedSections('Web', 'Chrome on windows using Deque color contrast Analyser', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Visual rejects AT', runChecks(row({ Checkpoint: '1.4.10', Description: typedSections('Web', 'Chrome on windows', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Text Spacing Web valid', runChecks(row({ Checkpoint: '1.4.12', Description: typedSections('Web', 'Chrome on windows using Text spacing extension', '') })), 'S5', 'pass');
+    assertStatus('Text Spacing iOS Mobile Web valid', runChecks(row({ Checkpoint: '1.4.12', Description: typedSections('iOS Mobile Web', 'Safari on iOS mobile using Text spacing extension', '') })), 'S5', 'pass');
+    assertStatus('Keyboard Web valid', runChecks(row({ Checkpoint: '2.4.7', Description: typedSections('Web', 'Chrome on windows using keyboard', '') })), 'S5', 'pass');
+    assertStatus('Keyboard rejects AT', runChecks(row({ Checkpoint: '2.4.7', Description: typedSections('Web', 'Chrome on windows using keyboard', 'NVDA') })), 'S5', 'fail');
+    const keyboardNvda = s5('2.4.7', 'Web', 'Chrome on windows using NVDA Assistive Technology', '');
+    assertStatus('Keyboard rejects NVDA Test Method without AT field', { checks: [keyboardNvda] }, 'S5', 'fail');
+    record('Keyboard NVDA message is explicit', keyboardNvda.note.includes('Assistive Technology must not be used in the Test Method'), keyboardNvda.note);
+    const realKeyboardRow = row({
+      Checkpoint: 'Keyboard Navigation (2.1.1.a)',
+      'Assistive technology': 'NVDA',
+      Description: typedSections('Web', 'Chrome on Windows using keyboard', ''),
+    });
+    const realKeyboardResult = runChecks(realKeyboardRow);
+    assertStatus('Real Keyboard export row fails S5', realKeyboardResult, 'S5', 'fail');
+    record('Real Keyboard export flags CSV AT', (chk(realKeyboardResult, 'S5').note || '').includes('Assistive Technology must not be provided'), chk(realKeyboardResult, 'S5').note);
+
+    assertStatus('Visual Native iOS valid', runChecks(row({ Checkpoint: '2.4.2', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS' })) })), 'S5', 'pass');
+    assertStatus('Color Native iOS valid', runChecks(row({ Checkpoint: '1.4.11', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS using Deque color contrast Analyser' })) })), 'S5', 'pass');
+    assertStatus('Text Spacing Native iOS unsupported', runChecks(row({ Checkpoint: '1.4.12', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS' })) })), 'S5', 'fail');
+    record('unsupported rule message is explicit', s5('1.4.12', 'Web', 'Chrome on windows using Text spacing extension', '').status === 'pass', s5('1.4.12', 'Web', 'Chrome on windows using Text spacing extension', '').note);
+    assertStatus('Keyboard Mobile Web unsupported', runChecks(row({ Checkpoint: '2.1.2', Description: typedSections('Mobile Web', 'Safari on iOS mobile', '') })), 'S5', 'fail');
+  })();
+
+  // ── 3.3.2 (Labels or Instructions) must not reference Assistive Technology.
+  //    Folded into S5 (Context / Test Method) and S6 (Step 1). ────────
+  (function () {
+    // Clean 3.3.2 issue (no AT in Context or steps) → both S5 and S6 pass
+    let s = fullSections();
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Summary: 'Label is missing - Home page (search field)', Description: serialize(s) }));
+    assertStatus('3.3.2 clean → S5', r, 'S5', 'pass');
+    assertStatus('3.3.2 clean → S6', r, 'S6', 'pass');
+
+    // AT in the Test Method line → S5 fail carrying the 3.3.2 message
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: NVDA on Windows';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 AT in Test Method → S5', r, 'S5', 'fail');
+    record('S5 carries the 3.3.2 Context message', (chk(r, 'S5').note || '').includes('Context should not have Assistive Technology'), chk(r, 'S5').note);
+
+    // Assistive Technology line in Context → S5 fail carrying the 3.3.2 message
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nAssistive Technology: NVDA\nTest Method: Chrome on Windows';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 AT line in Context → S5', r, 'S5', 'fail');
+    record('S5 carries the 3.3.2 Context message (AT line)', (chk(r, 'S5').note || '').includes('Context should not have Assistive Technology'), chk(r, 'S5').note);
+
+    // Switch Access reference in the Test Method → S5 fail
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: Switch Access navigation';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 Switch Access in Context → S5', r, 'S5', 'fail');
+
+    // "Turn on screen reader" in Step 1 → S6 fail carrying the 3.3.2 message
+    s = fullSections();
+    s['Steps to reproduce'] = '1. Turn on the screen reader (NVDA).\n2. Navigate to the field.\n3. Observe the issue.';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 "turn on screen reader" Step 1 → S6', r, 'S6', 'fail');
+    record('S6 carries the 3.3.2 Step message', (chk(r, 'S6').note || '').includes('Step 1 should not start with'), chk(r, 'S6').note);
+
+    // AT enabled in a later step (Enable VoiceOver) → S6 fail
+    s = fullSections();
+    s['Steps to reproduce'] = '1. Open the above-mentioned URL.\n2. Enable VoiceOver.\n3. Observe the issue.';
+    r = runChecks(row({ Checkpoint: '3.3.2', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 AT in a later step → S6', r, 'S6', 'fail');
+
+    // Checkpoint as the full WCAG label + AT step → still detected → S6 fail
+    s = fullSections();
+    s['Steps to reproduce'] = '1. Enable TalkBack.\n2. Observe.';
+    r = runChecks(row({ Checkpoint: 'Labels or Instructions (3.3.2.a)', Method: 'Manual', Description: serialize(s) }));
+    assertStatus('3.3.2 from WCAG label + AT step → S6', r, 'S6', 'fail');
+
+    // Scope: a NON-3.3.2 screen-reader issue keeps AT normally — the 3.3.2 rule
+    // must NOT fire (no 3.3.2 message in S5 or S6).
+    s = fullSections();
+    s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nAssistive Technology: NVDA\nTest Method: NVDA on Windows';
+    s['Steps to reproduce'] = '1. Turn on the screen reader (NVDA).\n2. Navigate to the field.\n3. Observe.';
+    r = runChecks(row({ Checkpoint: '4.1.2', Method: 'Manual', Summary: 'Button does not have a name - Home page (btn)', Description: serialize(s) }));
+    record('non-3.3.2: no 3.3.2 Context message in S5', !((chk(r, 'S5').note || '').includes('Context should not have Assistive Technology')), chk(r, 'S5').note);
+    record('non-3.3.2: no 3.3.2 Step message in S6', !((chk(r, 'S6').note || '').includes('Step 1 should not start with')), chk(r, 'S6').note);
   })();
 
   // ── Regression — every check still produces a result ─────────────
