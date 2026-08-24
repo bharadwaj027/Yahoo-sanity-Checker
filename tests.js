@@ -484,14 +484,18 @@ function runTests() {
   })();
 
   // ── Checkpoint-owned Context / Test Method validation ────────────
+  // These fixtures exercise the manual checkpoint-type rules, so they are Manual
+  // issues (mrow injects Method: 'Manual'). Automation issues are covered by the
+  // dedicated block further below.
   (function () {
+    const mrow = over => row(Object.assign({ Method: 'Manual' }, over));
     function typedSections(platform, testMethod, at) {
       const s = fullSections();
       s['Context'] = `Platform: ${platform}\nOperating System: ${platform === 'Mobile Web' ? 'iOS' : 'Windows 11'}\nBrowser: ${platform === 'Mobile Web' ? 'Safari' : 'Chrome 120'}\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${testMethod}`;
       return serialize(s);
     }
     function s5(checkpoint, platform, testMethod, at) {
-      return chk(runChecks(row({ Checkpoint: checkpoint, Description: typedSections(platform, testMethod, at) })), 'S5');
+      return chk(runChecks(mrow({ Checkpoint: checkpoint, Description: typedSections(platform, testMethod, at) })), 'S5');
     }
 
     record('checkpoint classifier uses Checkpoint, not Test Method', classifyCheckpoint('1.4.10') === 'Visual', classifyCheckpoint('1.4.10'));
@@ -500,38 +504,220 @@ function runTests() {
     record('2.1.1 defaults to Keyboard', classifyCheckpoint('2.1.1') === 'Keyboard', classifyCheckpoint('2.1.1'));
     record('2.1.1 exception is Screen Reader', classifyCheckpoint('2.1.1 - Action cannot be performed with a screen reader turned on') === 'Screen Reader', classifyCheckpoint('2.1.1 - Action cannot be performed with a screen reader turned on'));
 
-    assertStatus('Screen Reader Web valid', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows using NVDA Assistive Technology', 'NVDA') })), 'S5', 'pass');
-    assertStatus('Screen Reader Web missing AT fails', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows', '') })), 'S5', 'fail');
+    assertStatus('Screen Reader Web valid', runChecks(mrow({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows using NVDA Assistive Technology', 'NVDA') })), 'S5', 'pass');
+    assertStatus('Screen Reader Web missing AT fails', runChecks(mrow({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows', '') })), 'S5', 'fail');
     record('Screen Reader missing AT message', s5('1.3.1', 'Web', 'Chrome on windows', '').note.includes('Assistive Technology is required'), s5('1.3.1', 'Web', 'Chrome on windows', '').note);
-    assertStatus('Screen Reader iOS Mobile Web valid', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Mobile Web', 'Safari on iOS mobile using VoiceOver', 'VoiceOver') })), 'S5', 'pass');
-    assertStatus('Screen Reader Native iOS valid', runChecks(row({ Checkpoint: '1.3.1', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iOS\nOperating System: iOS 17\nDevice Model: iPhone\nAssistive Technology: VoiceOver\nTest Method: iOS using VoiceOver' })) })), 'S5', 'pass');
-    assertStatus('Screen Reader correct AT but wrong method fails', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows', 'NVDA') })), 'S5', 'fail');
-    assertStatus('Screen Reader placeholder AT fails', runChecks(row({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows using NVDA Assistive Technology', 'N/A') })), 'S5', 'fail');
+    assertStatus('Screen Reader iOS Mobile Web valid', runChecks(mrow({ Checkpoint: '1.3.1', Description: typedSections('Mobile Web', 'Safari on iPhone using VoiceOver screen reader', 'VoiceOver') })), 'S5', 'pass');
+    assertStatus('Screen Reader Native iOS valid', runChecks(mrow({ Checkpoint: '1.3.1', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iOS\nOperating System: iOS 17\nDevice Model: iPhone\nAssistive Technology: VoiceOver\nTest Method: iPhone using VoiceOver screen reader' })) })), 'S5', 'pass');
+    assertStatus('Screen Reader correct AT but wrong method fails', runChecks(mrow({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Screen Reader placeholder AT fails', runChecks(mrow({ Checkpoint: '1.3.1', Description: typedSections('Web', 'Chrome on windows using NVDA Assistive Technology', 'N/A') })), 'S5', 'fail');
 
-    assertStatus('Color Web valid', runChecks(row({ Checkpoint: '1.4.3', Description: typedSections('Web', 'Chrome on windows using Deque color contrast Analyser', '') })), 'S5', 'pass');
-    assertStatus('Color rejects AT', runChecks(row({ Checkpoint: '1.4.3', Description: typedSections('Web', 'Chrome on windows using Deque color contrast Analyser', 'NVDA') })), 'S5', 'fail');
-    assertStatus('Visual rejects AT', runChecks(row({ Checkpoint: '1.4.10', Description: typedSections('Web', 'Chrome on windows', 'NVDA') })), 'S5', 'fail');
-    assertStatus('Text Spacing Web valid', runChecks(row({ Checkpoint: '1.4.12', Description: typedSections('Web', 'Chrome on windows using Text spacing extension', '') })), 'S5', 'pass');
-    assertStatus('Text Spacing iOS Mobile Web valid', runChecks(row({ Checkpoint: '1.4.12', Description: typedSections('iOS Mobile Web', 'Safari on iOS mobile using Text spacing extension', '') })), 'S5', 'pass');
-    assertStatus('Keyboard Web valid', runChecks(row({ Checkpoint: '2.4.7', Description: typedSections('Web', 'Chrome on windows using keyboard', '') })), 'S5', 'pass');
-    assertStatus('Keyboard rejects AT', runChecks(row({ Checkpoint: '2.4.7', Description: typedSections('Web', 'Chrome on windows using keyboard', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Color Web valid', runChecks(mrow({ Checkpoint: '1.4.3', Description: typedSections('Web', 'Chrome on windows using Deque color contrast Analyser', '') })), 'S5', 'pass');
+    assertStatus('Color rejects AT', runChecks(mrow({ Checkpoint: '1.4.3', Description: typedSections('Web', 'Chrome on windows using Deque color contrast Analyser', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Visual rejects AT', runChecks(mrow({ Checkpoint: '1.4.10', Description: typedSections('Web', 'Chrome on windows', 'NVDA') })), 'S5', 'fail');
+    assertStatus('Text Spacing Web valid', runChecks(mrow({ Checkpoint: '1.4.12', Description: typedSections('Web', 'Chrome on windows using Text spacing extension', '') })), 'S5', 'pass');
+    assertStatus('Text Spacing iOS Mobile Web valid', runChecks(mrow({ Checkpoint: '1.4.12', Description: typedSections('iOS Mobile Web', 'Safari on iOS mobile using Text spacing extension', '') })), 'S5', 'pass');
+    assertStatus('Keyboard Web valid', runChecks(mrow({ Checkpoint: '2.4.7', Description: typedSections('Web', 'Chrome on windows using keyboard', '') })), 'S5', 'pass');
+    assertStatus('Keyboard rejects AT', runChecks(mrow({ Checkpoint: '2.4.7', Description: typedSections('Web', 'Chrome on windows using keyboard', 'NVDA') })), 'S5', 'fail');
     const keyboardNvda = s5('2.4.7', 'Web', 'Chrome on windows using NVDA Assistive Technology', '');
     assertStatus('Keyboard rejects NVDA Test Method without AT field', { checks: [keyboardNvda] }, 'S5', 'fail');
     record('Keyboard NVDA message is explicit', keyboardNvda.note.includes('Assistive Technology must not be used in the Test Method'), keyboardNvda.note);
-    const realKeyboardRow = row({
+    // The CSV "Assistive technology" column is IGNORED (user's rule): a Keyboard
+    // export with NVDA only in that column, and a clean Context, must NOT be
+    // flagged for AT.
+    const csvOnlyAtRow = mrow({
       Checkpoint: 'Keyboard Navigation (2.1.1.a)',
       'Assistive technology': 'NVDA',
       Description: typedSections('Web', 'Chrome on Windows using keyboard', ''),
     });
-    const realKeyboardResult = runChecks(realKeyboardRow);
-    assertStatus('Real Keyboard export row fails S5', realKeyboardResult, 'S5', 'fail');
-    record('Real Keyboard export flags CSV AT', (chk(realKeyboardResult, 'S5').note || '').includes('Assistive Technology must not be provided'), chk(realKeyboardResult, 'S5').note);
+    const csvOnlyAtResult = runChecks(csvOnlyAtRow);
+    assertStatus('CSV AT column is ignored (Keyboard export passes S5)', csvOnlyAtResult, 'S5', 'pass');
+    record('CSV AT column raises no AT message', !(chk(csvOnlyAtResult, 'S5').note || '').includes('Assistive Technology must not be provided'), chk(csvOnlyAtResult, 'S5').note);
 
-    assertStatus('Visual Native iOS valid', runChecks(row({ Checkpoint: '2.4.2', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS' })) })), 'S5', 'pass');
-    assertStatus('Color Native iOS valid', runChecks(row({ Checkpoint: '1.4.11', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS using Deque color contrast Analyser' })) })), 'S5', 'pass');
-    assertStatus('Text Spacing Native iOS unsupported', runChecks(row({ Checkpoint: '1.4.12', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS' })) })), 'S5', 'fail');
+    assertStatus('Visual Native iOS valid', runChecks(mrow({ Checkpoint: '2.4.2', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS' })) })), 'S5', 'pass');
+    assertStatus('Color Native iOS valid', runChecks(mrow({ Checkpoint: '1.4.11', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS using Deque color contrast Analyser' })) })), 'S5', 'pass');
+    assertStatus('Text Spacing Native iOS unsupported', runChecks(mrow({ Checkpoint: '1.4.12', Description: serialize(Object.assign({}, nativeSections(), { Context: 'Platform: Native iPhone Mobile App\nOperating System: iOS 17\nDevice Model: iPhone\nTest Method: iOS' })) })), 'S5', 'fail');
     record('unsupported rule message is explicit', s5('1.4.12', 'Web', 'Chrome on windows using Text spacing extension', '').status === 'pass', s5('1.4.12', 'Web', 'Chrome on windows using Text spacing extension', '').note);
-    assertStatus('Keyboard Mobile Web unsupported', runChecks(row({ Checkpoint: '2.1.2', Description: typedSections('Mobile Web', 'Safari on iOS mobile', '') })), 'S5', 'fail');
+    assertStatus('Keyboard Mobile Web unsupported', runChecks(mrow({ Checkpoint: '2.1.2', Description: typedSections('Mobile Web', 'Safari on iOS mobile', '') })), 'S5', 'fail');
+  })();
+
+  // ── Android platforms + Automation (spec §8–§14) ─────────────────
+  (function () {
+    const mrow = over => row(Object.assign({ Method: 'Manual' }, over));
+
+    // Web-like (non-native) Context with the given platform, Test Method and AT.
+    function webCtx(platform, testMethod, at) {
+      const s = fullSections();
+      s['Context'] = `Platform: ${platform}\nOperating System: Android 14\nBrowser: Chrome 120\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${testMethod}`;
+      return serialize(s);
+    }
+    // Native Context (Platform / OS / Device Model / [AT] / Test Method).
+    function nativeCtx(platform, testMethod, at) {
+      return serialize(Object.assign({}, nativeSections(), {
+        Context: `Platform: ${platform}\nOperating System: Android 14\nDevice Model: Pixel Tablet\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${testMethod}`,
+      }));
+    }
+    const amwS5 = (cp, tm, at) => chk(runChecks(mrow({ Checkpoint: cp, Description: webCtx('Android Mobile Web', tm, at) })), 'S5');
+    const naS5  = (cp, tm, at) => chk(runChecks(mrow({ Checkpoint: cp, Description: nativeCtx('Native Android', tm, at) })), 'S5');
+
+    // Android Mobile Web (§9 / §13)
+    assertStatus('AMW Screen Reader valid', { checks: [amwS5('1.3.1', 'Chrome on Android using Talkback screen reader', 'TalkBack')] }, 'S5', 'pass');
+    assertStatus('AMW Screen Reader missing AT fails', { checks: [amwS5('1.3.1', 'Chrome on Android using Talkback screen reader', '')] }, 'S5', 'fail');
+    record('AMW SR missing AT message', amwS5('1.3.1', 'Chrome on Android using Talkback screen reader', '').note.includes('Assistive Technology is required'), amwS5('1.3.1', 'Chrome on Android using Talkback screen reader', '').note);
+    assertStatus('AMW Color valid', { checks: [amwS5('1.4.3', 'Chrome on Android using Deque color contrast Analyser', '')] }, 'S5', 'pass');
+    assertStatus('AMW Color rejects AT', { checks: [amwS5('1.4.3', 'Chrome on Android using Deque color contrast Analyser', 'TalkBack')] }, 'S5', 'fail');
+    assertStatus('AMW Visual valid', { checks: [amwS5('2.4.2', 'Chrome on Android', '')] }, 'S5', 'pass');
+    assertStatus('AMW Text Spacing valid (bookmarklet)', { checks: [amwS5('1.4.12', 'Chrome on Android using text spacing bookmarklet', '')] }, 'S5', 'pass');
+    assertStatus('AMW Text Spacing rejects "extension" wording', { checks: [amwS5('1.4.12', 'Chrome on Android using Text spacing extension', '')] }, 'S5', 'fail');
+    assertStatus('AMW Keyboard valid', { checks: [amwS5('2.4.7', 'Chrome on Android using keyboard', '')] }, 'S5', 'pass');
+    assertStatus('AMW Keyboard rejects AT', { checks: [amwS5('2.4.7', 'Chrome on Android using keyboard', 'TalkBack')] }, 'S5', 'fail');
+    // Existing CSV platform value that means Android mobile web is NOT one of ours,
+    // but the verbatim spec name resolves; a wrong Test Method is flagged clearly.
+    record('AMW wrong Test Method names Android Mobile Web', amwS5('1.4.3', 'Chrome on windows using Deque color contrast Analyser', '').note.includes('Android Mobile Web'), amwS5('1.4.3', 'Chrome on windows using Deque color contrast Analyser', '').note);
+
+    // Native Android (§10 / §13)
+    assertStatus('Native Android Screen Reader valid', { checks: [naS5('1.3.1', 'Android using Talkback screen reader', 'TalkBack')] }, 'S5', 'pass');
+    assertStatus('Native Android Screen Reader missing AT fails', { checks: [naS5('1.3.1', 'Android using Talkback screen reader', '')] }, 'S5', 'fail');
+    assertStatus('Native Android Color valid', { checks: [naS5('1.4.3', 'Android using Deque color contrast Analyser', '')] }, 'S5', 'pass');
+    assertStatus('Native Android Color rejects AT', { checks: [naS5('1.4.3', 'Android using Deque color contrast Analyser', 'TalkBack')] }, 'S5', 'fail');
+    assertStatus('Native Android Visual valid', { checks: [naS5('2.4.2', 'Android', '')] }, 'S5', 'pass');
+    assertStatus('Native Android Text Spacing unsupported', { checks: [naS5('1.4.12', 'Android', '')] }, 'S5', 'fail');
+    record('Native Android Text Spacing unsupported message', naS5('1.4.12', 'Android', '').note.includes('No Test Method rule is currently defined for Text Spacing checkpoints on Native Android'), naS5('1.4.12', 'Android', '').note);
+    assertStatus('Native Android Keyboard unsupported', { checks: [naS5('2.4.7', 'Android', '')] }, 'S5', 'fail');
+    record('Native Android Keyboard unsupported message', naS5('2.4.7', 'Android', '').note.includes('No Test Method rule is currently defined for Keyboard checkpoints on Native Android'), naS5('2.4.7', 'Android', '').note);
+    // Existing CSV platform value "Native Android Tablet App" also maps to Native Android.
+    assertStatus('Native Android via "Native Android Tablet App" value', { checks: [chk(runChecks(mrow({ Checkpoint: '1.3.1', Description: nativeCtx('Native Android Tablet App', 'Android using Talkback screen reader', 'TalkBack') })), 'S5')] }, 'S5', 'pass');
+
+    // Automation (§8F / §12) — identified first, independent of checkpoint type.
+    function autoRow(testMethod, over) {
+      const s = fullSections();
+      s['Context'] = `Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: ${testMethod}`;
+      return runChecks(row(Object.assign({ Method: 'Automated', Checkpoint: '4.1.2', Description: serialize(s) }, over || {})));
+    }
+    assertStatus('Automation correct Test Method', autoRow('Chrome on Windows using axe DevTools Chrome browser extension'), 'S5', 'pass');
+    assertStatus('Automation wrong Test Method (NVDA) fails', autoRow('Chrome on Windows using NVDA Assistive Technology'), 'S5', 'fail');
+    record('Automation wrong Test Method message', (chk(autoRow('Chrome on Windows using NVDA Assistive Technology'), 'S5').note || '').includes('Invalid Test Method for Automation issue'), chk(autoRow('Chrome on Windows using NVDA Assistive Technology'), 'S5').note);
+    // Automation issue is NOT validated as a Screen Reader checkpoint (no "AT required")
+    record('Automation not treated as Screen Reader checkpoint', !(chk(autoRow('Chrome on Windows using axe DevTools Chrome browser extension'), 'S5').note || '').includes('Assistive Technology is required'), chk(autoRow('Chrome on Windows using axe DevTools Chrome browser extension'), 'S5').note);
+    // Automation with an Assistive Technology line in the Context TEXT → fail
+    (function () {
+      const s = fullSections();
+      s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nAssistive Technology: NVDA\nTest Method: Chrome on Windows using axe DevTools Chrome browser extension';
+      const c = chk(runChecks(row({ Method: 'Automated', Checkpoint: '4.1.2', Description: serialize(s) })), 'S5');
+      assertStatus('Automation with AT line in Context fails', { checks: [c] }, 'S5', 'fail');
+      record('Automation AT-not-allowed message', (c.note || '').includes('must not be provided in the Context for an Automation issue'), c.note);
+    })();
+    // Automation with AT ONLY in the ignored CSV column → passes (column not consulted)
+    assertStatus('Automation with AT only in CSV column passes', autoRow('Chrome on Windows using axe DevTools Chrome browser extension', { 'Assistive technology': 'NVDA' }), 'S5', 'pass');
+    // "Automation" spelling of the Method column is honoured too
+    assertStatus('Automation ("Automation" spelling) wrong Test Method fails', autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Automation' }), 'S5', 'fail');
+
+    // Case-insensitive Test Method: "Chrome on Windows" (capital W) == matrix "Chrome on windows"
+    assertStatus('Visual Web accepts capitalised "Chrome on Windows"', runChecks(mrow({ Checkpoint: '2.4.2', Description: webCtx('Web', 'Chrome on Windows', '') })), 'S5', 'pass');
+    assertStatus('Keyboard Web accepts spacing/case variance', runChecks(mrow({ Checkpoint: '2.4.7', Description: webCtx('Web', '  Chrome   on   WINDOWS   using keyboard ', '') })), 'S5', 'pass');
+    // Genuinely different wording is still caught
+    assertStatus('Visual Web still rejects wrong wording', runChecks(mrow({ Checkpoint: '2.4.2', Description: webCtx('Web', 'Chrome on macOS', '') })), 'S5', 'fail');
+
+    // "Desktop Web" is an accepted alias of Web
+    assertStatus('Desktop Web alias resolves to Web (Visual)', runChecks(mrow({ Checkpoint: '2.4.2', Description: webCtx('Desktop Web', 'Chrome on windows', '') })), 'S5', 'pass');
+
+    // Combined platform, EVERY platform must be covered (user's choice). This is
+    // the real dual-platform shape: comma-separated fields, one entry per platform.
+    const dualCtx = (tm) => serialize(Object.assign({}, fullSections(), {
+      Context: `Platform: Desktop Web, iOS Mobile Web\nOperating System: Windows (Version: 11), iOS (Version: 17)\nBrowser: Chrome (Version: 120), Safari\nAssistive Technology: NVDA (Version: 2024), VoiceOver\nTest Method: ${tm}`,
+    }));
+    // Full canonical wording (with suffixes) for both platforms → pass.
+    assertStatus('Combined SR: both platforms covered (full wording)', runChecks(mrow({ Checkpoint: '1.3.1', Description: dualCtx('Chrome on Windows using NVDA Assistive Technology, Safari on iPhone using VoiceOver screen reader') })), 'S5', 'pass');
+    // Order-independent: reversed entries still cover both platforms → pass.
+    assertStatus('Combined SR: reversed entry order still passes', runChecks(mrow({ Checkpoint: '1.3.1', Description: dualCtx('Safari on iPhone using VoiceOver screen reader, Chrome on Windows using NVDA Assistive Technology') })), 'S5', 'pass');
+    // The user's earlier no-suffix wording → now fails with SPECIFIC per-tool errors.
+    (function () {
+      const c = chk(runChecks(mrow({ Checkpoint: '1.3.1', Description: dualCtx('Chrome on Windows using NVDA, Safari on iPhone using VoiceOver') })), 'S5');
+      assertStatus('Combined SR: missing suffixes fails', { checks: [c] }, 'S5', 'fail');
+      record('Combined SR: names "Assistive Technology is missing after NVDA"', (c.note || '').includes('Assistive Technology is missing after NVDA'), c.note);
+      record('Combined SR: names "Screen reader is missing after VoiceOver"', (c.note || '').includes('Screen reader is missing after VoiceOver'), c.note);
+    })();
+    // Only one platform's method given → fail, names the uncovered platform.
+    (function () {
+      const c = chk(runChecks(mrow({ Checkpoint: '1.3.1', Description: dualCtx('Chrome on Windows using NVDA Assistive Technology') })), 'S5');
+      assertStatus('Combined SR: missing iOS Mobile Web entry fails', { checks: [c] }, 'S5', 'fail');
+      record('Combined SR failure names the uncovered platform', (c.note || '').includes('iOS Mobile Web'), c.note);
+    })();
+    // Both entries present but one names the wrong tool → fail.
+    assertStatus('Combined SR: wrong tool for one platform fails', runChecks(mrow({ Checkpoint: '1.3.1', Description: dualCtx('Chrome on Windows using NVDA Assistive Technology, Safari on iPhone using TalkBack screen reader') })), 'S5', 'fail');
+    record('matrixPlatformsFor splits a combined value', typeof matrixPlatformsFor === 'function' && matrixPlatformsFor('Desktop Web, iOS Mobile Web').join('|') === 'Web|iOS Mobile Web', typeof matrixPlatformsFor === 'function' ? matrixPlatformsFor('Desktop Web, iOS Mobile Web').join('|') : 'no fn');
+
+    // Screen-Reader suffix rule: the trailing wording is required; when it is the
+    // ONLY thing missing, the tool gives a specific "<suffix> is missing after
+    // <tool>" error (single-platform issues).
+    const srSuffix = (cp, plat, tm, at) => chk(runChecks(mrow({ Checkpoint: cp, Description: (plat === 'Native iOS' || plat === 'Native Android')
+      ? serialize(Object.assign({}, nativeSections(), { Context: `Platform: ${plat}\nOperating System: OS\nDevice Model: Device\nAssistive Technology: ${at}\nTest Method: ${tm}` }))
+      : (function(){ const s = fullSections(); s['Context'] = `Platform: ${plat}\nOperating System: OS\nBrowser: Browser\nAssistive Technology: ${at}\nTest Method: ${tm}`; return serialize(s); })() })), 'S5');
+    (function () {
+      const c = srSuffix('1.3.1', 'Web', 'Chrome on Windows using NVDA', 'NVDA');
+      assertStatus('Web SR missing suffix fails', { checks: [c] }, 'S5', 'fail');
+      record('Web SR missing-suffix message', (c.note || '').includes('Assistive Technology is missing after NVDA'), c.note);
+    })();
+    (function () {
+      const c = srSuffix('1.3.1', 'Native iOS', 'iPhone using VoiceOver', 'VoiceOver');
+      record('iOS SR missing-suffix message', (c.note || '').includes('Screen reader is missing after VoiceOver'), c.note);
+    })();
+    (function () {
+      const c = srSuffix('1.3.1', 'Native Android', 'Android using TalkBack', 'TalkBack');
+      record('Android SR missing-suffix message', (c.note || '').includes('Screen reader is missing after TalkBack'), c.note);
+    })();
+    // Full suffix present → no missing-suffix error, S5 passes.
+    record('Web SR with suffix passes', srSuffix('1.3.1', 'Web', 'Chrome on Windows using NVDA Assistive Technology', 'NVDA').status === 'pass', srSuffix('1.3.1', 'Web', 'Chrome on Windows using NVDA Assistive Technology', 'NVDA').note);
+
+    // Tolerant matcher unit checks (classifyTestMethodEntry / testMethodMatches)
+    if (typeof classifyTestMethodEntry === 'function') {
+      record('classify: Web SR full → ok', classifyTestMethodEntry('Chrome on Windows using NVDA Assistive Technology', 'Screen Reader', 'Web').code === 'ok', '');
+      record('classify: Web SR no suffix → missing-suffix', classifyTestMethodEntry('Chrome on Windows using NVDA', 'Screen Reader', 'Web').code === 'missing-suffix', '');
+      record('classify: iOS MW SR full (iPhone) → ok', classifyTestMethodEntry('Safari on iPhone using VoiceOver screen reader', 'Screen Reader', 'iOS Mobile Web').code === 'ok', '');
+      record('classify: iOS MW SR no suffix → missing-suffix', classifyTestMethodEntry('Safari on iPhone using VoiceOver', 'Screen Reader', 'iOS Mobile Web').code === 'missing-suffix', '');
+      record('classify: Web SR without NVDA → no', classifyTestMethodEntry('Chrome on Windows', 'Screen Reader', 'Web').code === 'no', '');
+      record('classify: wrong tool (TalkBack on iOS) → no', classifyTestMethodEntry('Safari on iPhone using TalkBack screen reader', 'Screen Reader', 'iOS Mobile Web').code === 'no', '');
+      record('classify: Native iOS full → ok', classifyTestMethodEntry('iPhone using VoiceOver screen reader', 'Screen Reader', 'Native iOS').code === 'ok', '');
+      record('classify: Native iOS SR needs no Safari (iOS MW rejects)', classifyTestMethodEntry('iPhone using VoiceOver screen reader', 'Screen Reader', 'iOS Mobile Web').code === 'no', '');
+      record('classify: Visual rejects a named tool', testMethodMatches('Chrome on windows using NVDA', 'Visual', 'Web') === false, '');
+      record('classify: Visual accepts environment only', testMethodMatches('Chrome on Windows', 'Visual', 'Web') === true, '');
+      record('classify: AMW text spacing bookmarklet ok', testMethodMatches('Chrome on Android using text spacing bookmarklet', 'Text Spacing', 'Android Mobile Web') === true, '');
+      record('classify: AMW text spacing extension rejected', testMethodMatches('Chrome on Android using text spacing extension', 'Text Spacing', 'Android Mobile Web') === false, '');
+    }
+
+    // Exact wording + capitalisation of every required Test Method (spec §11 / §14)
+    const M = (typeof TEST_METHOD_MATRIX !== 'undefined') ? TEST_METHOD_MATRIX : null;
+    record('matrix present', !!M, 'TEST_METHOD_MATRIX global');
+    if (M) {
+      const eq = (p, t, v) => record(`matrix wording ${p} / ${t}`, M[p] && M[p][t] === v, `${p}/${t} = ${M[p] && M[p][t]}`);
+      eq('Web', 'Screen Reader', 'Chrome on Windows using NVDA Assistive Technology');
+      eq('Web', 'Color', 'Chrome on windows using Deque color contrast Analyser');
+      eq('Web', 'Visual', 'Chrome on windows');
+      eq('Web', 'Text Spacing', 'Chrome on windows using Text spacing extension');
+      eq('Web', 'Keyboard', 'Chrome on windows using keyboard');
+      eq('iOS Mobile Web', 'Screen Reader', 'Safari on iPhone using VoiceOver screen reader');
+      eq('iOS Mobile Web', 'Color', 'Safari on iOS mobile using Deque color contrast Analyser');
+      eq('iOS Mobile Web', 'Visual', 'Safari on iOS mobile');
+      eq('iOS Mobile Web', 'Text Spacing', 'Safari on iOS mobile using Text spacing extension');
+      eq('Native iOS', 'Screen Reader', 'iPhone using VoiceOver screen reader');
+      eq('Native iOS', 'Color', 'iOS using Deque color contrast Analyser');
+      eq('Native iOS', 'Visual', 'iOS');
+      eq('Android Mobile Web', 'Screen Reader', 'Chrome on Android using TalkBack screen reader');
+      eq('Android Mobile Web', 'Color', 'Chrome on Android using Deque color contrast Analyser');
+      eq('Android Mobile Web', 'Visual', 'Chrome on Android');
+      eq('Android Mobile Web', 'Text Spacing', 'Chrome on Android using text spacing bookmarklet');
+      eq('Android Mobile Web', 'Keyboard', 'Chrome on Android using keyboard');
+      eq('Native Android', 'Screen Reader', 'Android using TalkBack screen reader');
+      eq('Native Android', 'Color', 'Android using Deque color contrast Analyser');
+      eq('Native Android', 'Visual', 'Android');
+      record('iOS Mobile Web Keyboard unsupported (null)', M['iOS Mobile Web'] && M['iOS Mobile Web']['Keyboard'] === null, String(M['iOS Mobile Web'] && M['iOS Mobile Web']['Keyboard']));
+      record('Native iOS Text Spacing unsupported (null)', M['Native iOS'] && M['Native iOS']['Text Spacing'] === null, String(M['Native iOS'] && M['Native iOS']['Text Spacing']));
+      record('Native Android Text Spacing unsupported (null)', M['Native Android'] && M['Native Android']['Text Spacing'] === null, String(M['Native Android'] && M['Native Android']['Text Spacing']));
+      record('Native Android Keyboard unsupported (null)', M['Native Android'] && M['Native Android']['Keyboard'] === null, String(M['Native Android'] && M['Native Android']['Keyboard']));
+    }
+    if (typeof AUTOMATION_TEST_METHOD !== 'undefined') {
+      record('automation Test Method wording', AUTOMATION_TEST_METHOD === 'Chrome on Windows using axe DevTools Chrome browser extension', AUTOMATION_TEST_METHOD);
+    }
   })();
 
   // ── 3.3.2 (Labels or Instructions) must not reference Assistive Technology.
@@ -590,6 +776,32 @@ function runTests() {
     r = runChecks(row({ Checkpoint: '4.1.2', Method: 'Manual', Summary: 'Button does not have a name - Home page (btn)', Description: serialize(s) }));
     record('non-3.3.2: no 3.3.2 Context message in S5', !((chk(r, 'S5').note || '').includes('Context should not have Assistive Technology')), chk(r, 'S5').note);
     record('non-3.3.2: no 3.3.2 Step message in S6', !((chk(r, 'S6').note || '').includes('Step 1 should not start with')), chk(r, 'S6').note);
+  })();
+
+  // ── Checkpoint classification matches the authoritative list ─────
+  // Guards checkpoint-classification.md against CHECKPOINT_TYPES / classifyCheckpoint.
+  (function () {
+    const AUTHORITATIVE = {
+      'Screen Reader': ['1.1.1', '1.3.1', '2.4.4', '2.4.6', '2.5.3', '3.1.1', '3.3.2.b', '4.1.2', '4.1.3'],
+      'Visual': ['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.3.3', '1.3.4', '1.3.5', '1.4.2', '1.4.4', '1.4.5', '1.4.10', '1.4.13', '2.2.1', '2.2.2', '2.3.1', '2.4.2', '2.4.5', '2.5.1', '2.5.2', '2.5.4', '2.5.7', '2.5.8', '3.1.2', '3.2.6', '3.3.2.a', '3.3.2.c', '3.3.3', '3.3.4', '3.3.7', '3.3.8'],
+      'Color': ['1.4.1', '1.4.3', '1.4.11'],
+      'Text Spacing': ['1.4.12'],
+      'Keyboard': ['2.1.1', '2.1.2', '2.1.4', '2.4.1', '2.4.3', '2.4.7', '2.4.11', '3.2.1', '3.2.2'],
+    };
+    if (typeof CHECKPOINT_TYPES !== 'undefined') {
+      Object.keys(AUTHORITATIVE).forEach(type => {
+        record(`CHECKPOINT_TYPES matches doc: ${type}`,
+          (CHECKPOINT_TYPES[type] || []).join(',') === AUTHORITATIVE[type].join(','),
+          `code=${(CHECKPOINT_TYPES[type] || []).join(',')}`);
+      });
+    }
+    // classifyCheckpoint resolves every listed id to its type (3.3.2 exception:
+    // classify a bare "3.3.2.x" sub-id directly).
+    Object.keys(AUTHORITATIVE).forEach(type => {
+      AUTHORITATIVE[type].forEach(cp => {
+        record(`classify ${cp} → ${type}`, classifyCheckpoint(cp) === type, `got ${classifyCheckpoint(cp)}`);
+      });
+    });
   })();
 
   // ── Regression — every check still produces a result ─────────────

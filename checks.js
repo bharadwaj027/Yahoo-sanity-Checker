@@ -5,11 +5,14 @@
 
 const PLATFORM_MAP = {
   'web': 'Web',
+  'desktop web': 'Web',
   'mobile web': 'Mobile Web',
   'ios mobile web': 'Mobile Web',
+  'android mobile web': 'Android Mobile Web',
   'native app': 'Native App',
   'native ios': 'Native iOS',
   'native ios mobile app': 'Native iOS',
+  'native android': 'Native Android',
   'native android tablet app': 'Android Tablet',
   'native android mobile app': 'Android Mobile',
   'native ipad tablet app': 'iPad',
@@ -37,7 +40,7 @@ function normalizePlatform(rawPlatform) {
 }
 
 function isNative(platform) {
-  return ['Native App', 'Native iOS', 'Android Tablet', 'Android Mobile', 'iPad', 'iPhone'].includes(platform);
+  return ['Native App', 'Native iOS', 'Native Android', 'Android Tablet', 'Android Mobile', 'iPad', 'iPhone'].includes(platform);
 }
 
 function extractField(desc, label) {
@@ -455,38 +458,182 @@ function classifyCheckpoint(checkpoint) {
   return null;
 }
 
+// ── Centralized Context / Test-Method matrix (spec §8–§14) ──────────────────
+// Single authoritative source for the required Test Method of every supported
+// platform × checkpoint-type combination, keyed platform → checkpoint type. A
+// `null` (or absent) cell means "no Test Method rule is defined" for that combo:
+// the Unsupported Platform Rule then applies and the tool must not infer or
+// invent a Test Method. New platforms are added here alone — no other logic
+// changes. The Assistive-Technology rule is uniform and derived from the
+// checkpoint type (Screen Reader → AT required in Context; every other type →
+// AT not allowed), so it is not duplicated per cell. Automation issues are
+// validated separately (see AUTOMATION_TEST_METHOD and runChecks / spec §12).
+// The Test Method strings are verbatim, with the exact capitalisation the spec
+// mandates (e.g. lower-case "windows", "text spacing bookmarklet" not
+// "Text spacing extension") — do not "correct" them.
+const TEST_METHOD_MATRIX = {
+  'Web': {
+    'Screen Reader': 'Chrome on Windows using NVDA Assistive Technology',
+    'Color': 'Chrome on windows using Deque color contrast Analyser',
+    'Visual': 'Chrome on windows',
+    'Text Spacing': 'Chrome on windows using Text spacing extension',
+    'Keyboard': 'Chrome on windows using keyboard',
+  },
+  'iOS Mobile Web': {
+    'Screen Reader': 'Safari on iPhone using VoiceOver screen reader',
+    'Color': 'Safari on iOS mobile using Deque color contrast Analyser',
+    'Visual': 'Safari on iOS mobile',
+    'Text Spacing': 'Safari on iOS mobile using Text spacing extension',
+    'Keyboard': null,
+  },
+  'Native iOS': {
+    'Screen Reader': 'iPhone using VoiceOver screen reader',
+    'Color': 'iOS using Deque color contrast Analyser',
+    'Visual': 'iOS',
+    'Text Spacing': null,
+    'Keyboard': null,
+  },
+  'Android Mobile Web': {
+    'Screen Reader': 'Chrome on Android using TalkBack screen reader',
+    'Color': 'Chrome on Android using Deque color contrast Analyser',
+    'Visual': 'Chrome on Android',
+    'Text Spacing': 'Chrome on Android using text spacing bookmarklet',
+    'Keyboard': 'Chrome on Android using keyboard',
+  },
+  'Native Android': {
+    'Screen Reader': 'Android using TalkBack screen reader',
+    'Color': 'Android using Deque color contrast Analyser',
+    'Visual': 'Android',
+    'Text Spacing': null,
+    'Keyboard': null,
+  },
+};
+
+// Automation issues are independent of platform and checkpoint type: identified
+// first (Method = Automated/Automation) and always validated against this one
+// Test Method, with Assistive Technology not allowed in the Context (spec §8F).
+const AUTOMATION_TEST_METHOD = 'Chrome on Windows using axe DevTools Chrome browser extension';
+
 function expectedTestMethod(checkpointType, platform) {
-  const methods = {
-    'Screen Reader': {
-      Web: 'Chrome on windows using NVDA Assistive Technology',
-      'Mobile Web': 'Safari on iOS mobile using VoiceOver',
-      'Native iOS': 'iOS using VoiceOver',
-    },
-    Color: {
-      Web: 'Chrome on windows using Deque color contrast Analyser',
-      'Mobile Web': 'Safari on iOS mobile using Deque color contrast Analyser',
-      'Native iOS': 'iOS using Deque color contrast Analyser',
-    },
-    Visual: {
-      Web: 'Chrome on windows',
-      'Mobile Web': 'Safari on iOS mobile',
-      'Native iOS': 'iOS',
-    },
-    'Text Spacing': {
-      Web: 'Chrome on windows using Text spacing extension',
-      'Mobile Web': 'Safari on iOS mobile using Text spacing extension',
-    },
-    Keyboard: {
-      Web: 'Chrome on windows using keyboard',
-    },
-  };
-  return methods[checkpointType] ? methods[checkpointType][platform] || null : null;
+  const row = TEST_METHOD_MATRIX[platform];
+  if (!row) return null;
+  return row[checkpointType] || null;
 }
 
-function checkpointPlatform(platform) {
-  if (platform === 'Web' || platform === 'Mobile Web') return platform;
-  if (platform === 'iPad' || platform === 'iPhone') return 'Native iOS';
+// Map the tool's normalised platform to a matrix platform key. Accepts the spec
+// platform names verbatim and also folds the tool's existing platform values:
+//   Web                                       → Web
+//   Mobile Web / iOS Mobile Web               → iOS Mobile Web  (Mobile Web has always meant iOS mobile web here)
+//   Android Mobile Web                        → Android Mobile Web
+//   iPad / iPhone / Native iOS                → Native iOS
+//   Android Tablet / Android Mobile / Native Android → Native Android
+//   Native App                                → inferred iOS/Android from the OS / AT metadata
+function checkpointPlatform(platform, osVal, atVal) {
+  if (platform === 'Web') return 'Web';
+  if (platform === 'Mobile Web' || platform === 'iOS Mobile Web') return 'iOS Mobile Web';
+  if (platform === 'Android Mobile Web') return 'Android Mobile Web';
+  if (platform === 'iPad' || platform === 'iPhone' || platform === 'Native iOS') return 'Native iOS';
+  if (platform === 'Android Tablet' || platform === 'Android Mobile' || platform === 'Native Android') return 'Native Android';
+  if (platform === 'Native App') {
+    const kind = resolveNativePlatform(platform, osVal, atVal);
+    if (kind === 'iOS') return 'Native iOS';
+    if (kind === 'Android') return 'Native Android';
+  }
   return platform || 'Unknown';
+}
+
+// A Platform line may name more than one platform, e.g.
+// "Desktop Web, iOS Mobile Web" or "Web & Android Mobile Web". Split it on
+// commas / & / + / " and ", resolve each token to a matrix platform key, and
+// return the de-duplicated list (unrecognised tokens are dropped). The Test
+// Method then passes if it matches ANY listed platform's required method.
+function matrixPlatformsFor(rawPlatform, osVal, atVal) {
+  const tokens = String(rawPlatform || '')
+    .split(/\s*(?:,|&|\/|\+)\s*|\s+and\s+/i)
+    .map(t => t.trim())
+    .filter(Boolean);
+  const keys = [];
+  for (const tok of tokens) {
+    const key = checkpointPlatform(normalizePlatform(tok), osVal, atVal);
+    if (key && key !== 'Unknown' && !keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+// Case- and whitespace-insensitive comparison key for a Test Method string, so
+// "Chrome on Windows" matches the matrix "Chrome on windows" (capitalisation and
+// spacing are not meaningful; genuinely different wording is still caught).
+function normTestMethod(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// Any Assistive-Technology / tool name that may appear in a Test Method. Used to
+// verify a Visual entry names NO tool (environment only).
+const TOOL_WORDS_RE = /\bnvda\b|voice\s?over|talk\s?back|\bjaws\b|\bnarrator\b|switch\s?access|voice\s?control|keyboard|deque|colou?r contrast|analy[sz]er|text spacing|bookmarklet|extension/i;
+
+// The trailing wording every Screen Reader Test Method must carry after the
+// screen-reader name (spec / user rule): NVDA → "Assistive Technology";
+// VoiceOver / TalkBack → "screen reader". When this suffix is the ONLY thing
+// missing, the tool reports a specific "<suffix> is missing after <tool>" error
+// rather than a generic invalid-method error.
+const SR_TOOL_BY_PLATFORM = {
+  'Web':                { name: 'NVDA',     re: /\bnvda\b/,       suffixLabel: 'Assistive Technology', suffixRe: /assistive\s+technolog/i },
+  'iOS Mobile Web':     { name: 'VoiceOver', re: /voice\s?over/,  suffixLabel: 'Screen reader',        suffixRe: /screen\s?reader/i },
+  'Native iOS':         { name: 'VoiceOver', re: /voice\s?over/,  suffixLabel: 'Screen reader',        suffixRe: /screen\s?reader/i },
+  'Android Mobile Web': { name: 'TalkBack',  re: /talk\s?back/,   suffixLabel: 'Screen reader',        suffixRe: /screen\s?reader/i },
+  'Native Android':     { name: 'TalkBack',  re: /talk\s?back/,   suffixLabel: 'Screen reader',        suffixRe: /screen\s?reader/i },
+};
+
+// Classify ONE Test Method entry against a checkpoint type + platform. Returns
+// { code: 'ok' }               — the entry names the right environment + tool
+//                                (+ Screen-Reader suffix); phrasing/case/version
+//                                suffixes/synonyms are ignored (user's tolerant rule).
+// { code: 'missing-suffix', tool, suffixLabel } — Screen Reader only: right
+//                                environment + screen-reader name, but the
+//                                required "Assistive Technology"/"screen reader"
+//                                wording is absent.
+// { code: 'no' }               — wrong environment, wrong tool, or (Visual) a
+//                                tool is named where none should be.
+function classifyTestMethodEntry(entry, checkpointType, platform) {
+  const t = ' ' + normTestMethod(entry) + ' ';
+  const has = (...ws) => ws.every(w => Array.isArray(w) ? w.some(x => t.includes(x)) : t.includes(w));
+  const lacks = (...ws) => ws.every(w => !t.includes(w));
+
+  let envOk;
+  switch (platform) {
+    case 'Web':                envOk = has('chrome', 'windows'); break;
+    case 'iOS Mobile Web':     envOk = has('safari', ['ios', 'iphone', 'ipad']); break;
+    case 'Native iOS':         envOk = has(['ios', 'iphone', 'ipad']) && lacks('safari', 'chrome'); break;
+    case 'Android Mobile Web': envOk = has('chrome', 'android'); break;
+    case 'Native Android':     envOk = has('android') && lacks('chrome'); break;
+    default:                   return { code: 'no' };
+  }
+  if (!envOk) return { code: 'no' };
+
+  switch (checkpointType) {
+    case 'Screen Reader': {
+      const sr = SR_TOOL_BY_PLATFORM[platform];
+      if (!sr || !sr.re.test(t)) return { code: 'no' };          // wrong / missing screen-reader name
+      if (!sr.suffixRe.test(t)) return { code: 'missing-suffix', tool: sr.name, suffixLabel: sr.suffixLabel };
+      return { code: 'ok' };
+    }
+    case 'Color':
+      return /deque|colou?r contrast|analy[sz]er/.test(t) ? { code: 'ok' } : { code: 'no' };
+    case 'Keyboard':
+      return t.includes('keyboard') ? { code: 'ok' } : { code: 'no' };
+    case 'Text Spacing':
+      return (t.includes('text spacing') && (platform === 'Android Mobile Web' ? t.includes('bookmarklet') : t.includes('extension')))
+        ? { code: 'ok' } : { code: 'no' };
+    case 'Visual':
+      return !TOOL_WORDS_RE.test(t) ? { code: 'ok' } : { code: 'no' };   // environment only — no AT/tool named
+    default:
+      return { code: 'no' };
+  }
+}
+
+// Boolean convenience wrapper: does the entry fully match (code === 'ok')?
+function testMethodMatches(entry, checkpointType, platform) {
+  return classifyTestMethodEntry(entry, checkpointType, platform).code === 'ok';
 }
 
 function runChecks(row) {
@@ -497,7 +644,6 @@ function runChecks(row) {
   const attachments = String(row.Attachments || '').trim();
   const url = String(row.URL || '').trim();
   const checkpoint = String(row.Checkpoint || '').trim();
-  const csvAssistiveTechnology = String(row['Assistive technology'] || '').trim();
   const checkpointType = classifyCheckpoint(checkpoint);
   // 3.3.2 (Labels or Instructions) — tolerant of the full WCAG-label form, e.g.
   // "Labels or Instructions (3.3.2.a)". Such issues must not reference Assistive
@@ -672,32 +818,71 @@ function runChecks(row) {
 
     if (!testMethod) issues.push('The Context section does not end with a "Test Method:" line.');
 
-    // Checkpoint classification is authoritative for AT and Test Method rules.
-    // These checks deliberately do not use issueType, which is inferred from
-    // the submitted Test Method for the older step-consistency validation.
-    if (checkpointType) {
+    // Context AT + Test Method rules. Automation issues are identified FIRST and
+    // validated independently of the checkpoint-type rules (spec §12): AT must
+    // not appear in the Context and the Test Method must be the axe DevTools
+    // string — this prevents an Automation issue from being validated against a
+    // checkpoint-type Test Method. Otherwise the checkpoint classification is
+    // authoritative. (issueType — inferred from the submitted Test Method — is
+    // used only by the older S6 step-consistency validation, not here.)
+    const isAutomationIssue = /^autom/i.test(method);
+    if (isAutomationIssue || checkpointType) {
+      // AT presence is judged from the CONTEXT TEXT ONLY (the Assistive
+      // Technology / Screen Reader line, or an AT name in the Context). The CSV
+      // "Assistive technology" column is deliberately NOT consulted — real
+      // exports populate it regardless, so it produced false positives.
       const contextMetadata = contextText.split('\n').filter(line => !/^\s*Test Method\s*:/i.test(line)).join('\n');
       const namedAT = /\bnvda\b|\bjaws\b|\bnarrator\b|talk\s?back|voice\s?over/i.test(contextMetadata);
       const labelledAT = contextMetadata.match(/(?:assistive technology|screen reader)\s*:\s*([^\n]+)/i);
       const contextHasAT = namedAT || !!(labelledAT && !isMeaningless(labelledAT[1]));
-      const csvHasAT = !!csvAssistiveTechnology && !/^[\s,;"']+$/.test(csvAssistiveTechnology) && !isMeaningless(csvAssistiveTechnology);
-      if (checkpointType === 'Screen Reader') {
-        if (!contextHasAT) issues.push('Assistive Technology is required in the Context for Screen Reader checkpoints.');
-      } else if (contextHasAT || csvHasAT) {
-        issues.push(`Assistive Technology must not be provided in the Context for ${checkpointType} checkpoints.`);
-      }
-      if (checkpointType !== 'Screen Reader' && AT_REFERENCE_RE.test(testMethod || '')) {
-        issues.push(`Assistive Technology must not be used in the Test Method for ${checkpointType} checkpoints.`);
-      }
 
-      const methodPlatform = checkpointPlatform(platform);
-      const expected = expectedTestMethod(checkpointType, methodPlatform);
-      if (expected) {
-        if (testMethod !== expected) {
-          issues.push(`Invalid Test Method for ${checkpointType} checkpoint on ${methodPlatform}. Expected: "Test Method: ${expected}".`);
+      if (isAutomationIssue) {
+        if (contextHasAT) {
+          issues.push('Assistive Technology must not be provided in the Context for an Automation issue.');
+        }
+        // Tolerant: the Automation Test Method must name axe DevTools (any phrasing).
+        if (testMethod && !/axe\s*dev\s*tools/i.test(testMethod)) {
+          issues.push(`Invalid Test Method for Automation issue. Expected: "Test Method: ${AUTOMATION_TEST_METHOD}".`);
         }
       } else {
-        issues.push(`No Test Method rule is currently defined for ${checkpointType} checkpoints on ${methodPlatform}. Do not infer or invent a Test Method.`);
+        if (checkpointType === 'Screen Reader') {
+          if (!contextHasAT) issues.push('Assistive Technology is required in the Context for Screen Reader checkpoints.');
+        } else if (contextHasAT) {
+          issues.push(`Assistive Technology must not be provided in the Context for ${checkpointType} checkpoints.`);
+        }
+        if (checkpointType !== 'Screen Reader' && AT_REFERENCE_RE.test(testMethod || '')) {
+          issues.push(`Assistive Technology must not be used in the Test Method for ${checkpointType} checkpoints.`);
+        }
+
+        // A Platform line may name several platforms; then the Test Method is a
+        // comma-separated list, one entry per platform. Matching is tolerant
+        // (testMethodMatches: right environment + tool named, exact phrasing /
+        // capitalisation / version suffixes / synonyms ignored). EVERY listed
+        // platform that has a rule must be covered by some entry; platforms with
+        // no rule for this type raise the Unsupported Platform message.
+        const methodPlatforms = matrixPlatformsFor(rawPlatform, osVal, atVal);
+        const platformsToCheck = methodPlatforms.length ? methodPlatforms : [checkpointPlatform(platform, osVal, atVal)];
+        const tmEntries = String(testMethod || '').split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
+        const unsupported = platformsToCheck.filter(p => !expectedTestMethod(checkpointType, p));
+        const supported = platformsToCheck.filter(p => expectedTestMethod(checkpointType, p));
+        if (unsupported.length) {
+          issues.push(`No Test Method rule is currently defined for ${checkpointType} checkpoints on ${unsupported.join(', ')}. Do not infer or invent a Test Method.`);
+        }
+        if (testMethod) {
+          supported.forEach(p => {
+            const cls = tmEntries.map(e => classifyTestMethodEntry(e, checkpointType, p));
+            if (cls.some(c => c.code === 'ok')) return;                 // this platform is covered
+            const miss = cls.find(c => c.code === 'missing-suffix');
+            if (miss) {
+              // Screen Reader: right environment + screen-reader named, only the
+              // trailing wording is missing — give the specific guidance.
+              const msg = `${miss.suffixLabel} is missing after ${miss.tool} in the Test Method for ${p}.`;
+              if (!issues.includes(msg)) issues.push(msg);
+            } else {
+              issues.push(`Invalid or missing Test Method for ${checkpointType} checkpoint on ${p}. Expected: "${expectedTestMethod(checkpointType, p)}".`);
+            }
+          });
+        }
       }
     }
 
@@ -1129,6 +1314,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue,
     resolveNativePlatform, normCheckpoint, normRec, findNativeRecommendation,
-    classifyCheckpoint, expectedTestMethod,
+    classifyCheckpoint, expectedTestMethod, checkpointPlatform, matrixPlatformsFor,
+    testMethodMatches, classifyTestMethodEntry, TEST_METHOD_MATRIX, AUTOMATION_TEST_METHOD,
   };
 }
