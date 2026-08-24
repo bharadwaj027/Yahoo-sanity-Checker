@@ -190,8 +190,8 @@ function runTests() {
     const s2 = fullSections(); delete s2['Remediation Recommendation'];
     const d = serialize(s2) + '\n\nRecommendation to fix:\nDo the thing.';
     const rr = runChecks(row({ Description: d }));
-    assertStatus('S12 remediation variant field name fails', rr, 'S12', 'fail');
-    record('S12 remediation variant-name message', (chk(rr, 'S12').note || '').includes('Invalid field name'), chk(rr, 'S12').note);
+    assertStatus('S12 Recommendation to fix alternative label passes', rr, 'S12', 'pass');
+    record('S12 accepted alternative label is not rejected', !(chk(rr, 'S12').note || '').includes('Invalid field name'), chk(rr, 'S12').note);
   })();
 
   // ── S12 — Native audits: conditional required fields ─────────────
@@ -307,6 +307,8 @@ function runTests() {
 
     const iosE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'iOS' && e.issueDescription);
     const andE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.issueDescription);
+    const androidContrastE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.checkpoint === '1.4.11.a');
+    const androidOrE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.checkpoint === '1.3.2.a' && e.issueDescription.startsWith('Screen reader focus falls'));
 
     // Build a native issue: platformLine sets iOS/Android, Summary carries the
     // Excel Issue Description, and the Remediation Recommendation section holds
@@ -366,14 +368,34 @@ function runTests() {
       s['Context'] = `Platform: ${IOS}\nOperating System: iOS 17\nDevice Model: iPhone 15\nTest Method: VoiceOver`;
       delete s['Remediation Recommendation'];
       const rMiss = runChecks(row({ Checkpoint: iosE.checkpoint, Summary: iosE.issueDescription + ' - Home page (x)', Method: 'Manual', Description: serialize(s) }));
-      assertStatus('S14 iOS missing recommendation', rMiss, 'S14', 'fail');
-      record('S14 missing message', (chk(rMiss, 'S14').note || '').toLowerCase().includes('missing'), chk(rMiss, 'S14').note);
+      assertStatus('S14 skipped when recommendation is missing', rMiss, 'S14', 'na');
+      record('S14 missing recommendation defers to S12', (chk(rMiss, 'S14').note || '').includes('S12'), chk(rMiss, 'S14').note);
     })();
 
     // Android — exact → PASS ; modified → FAIL ; iOS rec → FAIL
     rr = runChecks(nrRow(AND, andE, andE.recommendation));
     record('S14 native fixture classified Android', (chk(rr, 'S14').detail || {}).platform === 'Android', (chk(rr,'S14')||{}).note);
     assertStatus('S14 Android exact recommendation', rr, 'S14', 'pass');
+
+    // Android real-data tolerance: the audit recommendation omits the word
+    // "color" from "background color" but otherwise matches the reference.
+    const androidMissingWord = androidContrastE.recommendation.replace('background color', 'background');
+    rr = runChecks(nrRow(AND, androidContrastE, androidMissingWord));
+    assertStatus('S14 Android recommendation with one omitted word', rr, 'S14', 'pass');
+
+    const androidMissingThreeWords = androidContrastE.recommendation.replace('background color', 'background').replace('either the inner or outer', 'either inner or outer');
+    rr = runChecks(nrRow(AND, androidContrastE, androidMissingThreeWords));
+    assertStatus('S14 Android recommendation with two omitted words', rr, 'S14', 'pass');
+
+    const androidMissingFourWords = androidMissingThreeWords.replace('user interface component', 'component');
+    rr = runChecks(nrRow(AND, androidContrastE, androidMissingFourWords));
+    assertStatus('S14 Android recommendation with more than two omitted words', rr, 'S14', 'fail');
+
+    const alternatives = androidOrE.recommendation.split(/\n\s*OR\s*\n/i);
+    rr = runChecks(nrRow(AND, androidOrE, alternatives[1]));
+    assertStatus('S14 accepts second OR recommendation alternative', rr, 'S14', 'pass');
+    rr = runChecks(nrRow(AND, androidOrE, alternatives.join('\n\nOR\n\n')));
+    assertStatus('S14 accepts both OR recommendation alternatives', rr, 'S14', 'pass');
 
     (function () {
       const mid = Math.floor(andE.recommendation.length / 2);

@@ -56,7 +56,7 @@ function hasPlaceholder(text) {
 const SECTION_HEADERS = [
   'Environment', 'Context', 'Steps to reproduce', 'Expected results',
   'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
-  'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name',
+  'Code Snippet', 'Remediation Recommendation', 'Recommendation to fix', 'Resource Link', 'Screen Name',
 ];
 
 function splitSections(desc) {
@@ -137,10 +137,9 @@ function referenceFieldContent(desc) {
   return out.join('\n').trim();
 }
 
-// Remediation Recommendation must use that exact label. If instead one of these
-// common variant labels is present, report the wrong name. Returns the variant
-// found, or null.
-const REMEDIATION_VARIANTS = ['Recommendation to fix', 'Fix Recommendation', 'How to Fix', 'Suggested Fix', 'Recommendation'];
+// These common variant labels are still rejected, except for "Recommendation
+// to fix", which is an accepted alternative to "Remediation Recommendation".
+const REMEDIATION_VARIANTS = ['Fix Recommendation', 'How to Fix', 'Suggested Fix', 'Recommendation'];
 function detectRemediationVariant(desc) {
   for (const v of REMEDIATION_VARIANTS) {
     const re = new RegExp('^\\s*' + v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:', 'im');
@@ -152,14 +151,14 @@ function detectRemediationVariant(desc) {
 // Remediation Recommendation is validated structurally only (no content-meaning
 // checks). Returns an error string, or null when it passes.
 function remediationFieldProblem(sections, desc) {
-  const labelPresent = /^\s*Remediation Recommendation\s*:/im.test(String(desc || ''));
+  const labelPresent = /^\s*(?:Remediation Recommendation|Recommendation to fix)\s*:/im.test(String(desc || ''));
   if (!labelPresent) {
     const variant = detectRemediationVariant(desc);
     return variant
       ? `Invalid field name "${variant}" used instead of "Remediation Recommendation".`
       : 'Remediation Recommendation is missing.';
   }
-  const content = fieldContent(sections, desc, 'Remediation Recommendation');
+  const content = fieldContent(sections, desc, 'Remediation Recommendation') || fieldContent(sections, desc, 'Recommendation to fix');
   if (!content) return 'Remediation Recommendation is empty.';   // empty or whitespace only
   if (/^\s*Rule\b/im.test(content)) return 'Remediation Recommendation contains a "Rule" section.';
   if (/^\s*Background\b/im.test(content)) return 'Remediation Recommendation contains a "Background" section.';
@@ -933,15 +932,14 @@ function runChecks(row) {
     const pinned = lookup.pinned;
     const cpId = (pinned || rows[0]).checkpoint;
     const sectionsN = splitSections(desc);
-    const actual = fieldContent(sectionsN, desc, 'Remediation Recommendation');
+    const actual = fieldContent(sectionsN, desc, 'Remediation Recommendation') || fieldContent(sectionsN, desc, 'Recommendation to fix');
     const mkDetail = (expected, issueDescription, matchMode) => ({
       platform: platformKind, tab: tabName, checkpoint: cpId,
       issueDescription: issueDescription || null, expected, actual,
       variantCount: rows.length, matchMode,
     });
     if (!actual) {
-      const exp = (pinned || rows[0]).recommendation;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix is missing.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'N/A – Remediation Recommendation is missing; S12 reports the missing required field.' });
       return;
     }
     if (/^\s*RULE\b/im.test(actual)) {
@@ -958,7 +956,30 @@ function runChecks(row) {
     // The authoritative recommendation must be present verbatim, but the ticket
     // may append extra per-issue content (e.g. a "Note: applicable screens"
     // list). So a reference matches when the field EQUALS it or STARTS WITH it.
-    const refMatches = (rec) => { const nr = normRec(rec); return na === nr || na.startsWith(nr); };
+    const refMatches = (rec) => {
+      const recommendationBody = value => normRec(value).split(/\n\s*REFERENCE\s*:\s*/i)[0].trim();
+      const actualAlternatives = recommendationBody(actual).split(/\n\s*OR\s*\n/i).map(s => s.trim()).filter(Boolean);
+      const expectedAlternatives = recommendationBody(rec).split(/\n\s*OR\s*\n/i).map(s => s.trim()).filter(Boolean);
+
+      return actualAlternatives.some(actualBody => expectedAlternatives.some(nr => {
+        if (actualBody === nr || actualBody.startsWith(nr)) return true;
+
+        // Permit up to two omitted words in the submitted recommendation, while
+        // requiring every submitted word to remain in the authoritative order.
+        const expectedWords = nr.toLowerCase().match(/[a-z0-9]+(?:['’][a-z0-9]+)*/g) || [];
+        const actualWords = actualBody.toLowerCase().match(/[a-z0-9]+(?:['’][a-z0-9]+)*/g) || [];
+        let actualIndex = 0;
+        let omitted = 0;
+        for (const expectedWord of expectedWords) {
+          if (actualIndex < actualWords.length && expectedWord === actualWords[actualIndex]) {
+            actualIndex++;
+          } else {
+            omitted++;
+          }
+        }
+        return actualIndex === actualWords.length && omitted <= 2;
+      }));
+    };
     if (pinned) {
       // Summary confidently identified the exact row → compare against it only.
       const ok = refMatches(pinned.recommendation);
