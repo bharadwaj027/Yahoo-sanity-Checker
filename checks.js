@@ -65,7 +65,7 @@ function hasPlaceholder(text) {
 const SECTION_HEADERS = [
   'Environment', 'Context', 'Steps to reproduce', 'Expected results',
   'Actual results', 'Affected user population', 'Applicable WCAG Success Criterion',
-  'Code Snippet', 'Remediation Recommendation', 'Resource Link', 'Screen Name',
+  'Code Snippet', 'Remediation Recommendation', 'Recommendation to fix', 'Resource Link', 'Screen Name',
 ];
 
 function splitSections(desc) {
@@ -146,10 +146,9 @@ function referenceFieldContent(desc) {
   return out.join('\n').trim();
 }
 
-// Remediation Recommendation must use that exact label. If instead one of these
-// common variant labels is present, report the wrong name. Returns the variant
-// found, or null.
-const REMEDIATION_VARIANTS = ['Recommendation to fix', 'Fix Recommendation', 'How to Fix', 'Suggested Fix', 'Recommendation'];
+// These common variant labels are still rejected, except for "Recommendation
+// to fix", which is an accepted alternative to "Remediation Recommendation".
+const REMEDIATION_VARIANTS = ['Fix Recommendation', 'How to Fix', 'Suggested Fix', 'Recommendation'];
 function detectRemediationVariant(desc) {
   for (const v of REMEDIATION_VARIANTS) {
     const re = new RegExp('^\\s*' + v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:', 'im');
@@ -161,14 +160,14 @@ function detectRemediationVariant(desc) {
 // Remediation Recommendation is validated structurally only (no content-meaning
 // checks). Returns an error string, or null when it passes.
 function remediationFieldProblem(sections, desc) {
-  const labelPresent = /^\s*Remediation Recommendation\s*:/im.test(String(desc || ''));
+  const labelPresent = /^\s*(?:Remediation Recommendation|Recommendation to fix)\s*:/im.test(String(desc || ''));
   if (!labelPresent) {
     const variant = detectRemediationVariant(desc);
     return variant
       ? `Invalid field name "${variant}" used instead of "Remediation Recommendation".`
       : 'Remediation Recommendation is missing.';
   }
-  const content = fieldContent(sections, desc, 'Remediation Recommendation');
+  const content = fieldContent(sections, desc, 'Remediation Recommendation') || fieldContent(sections, desc, 'Recommendation to fix');
   if (!content) return 'Remediation Recommendation is empty.';   // empty or whitespace only
   if (/^\s*Rule\b/im.test(content)) return 'Remediation Recommendation contains a "Rule" section.';
   if (/^\s*Background\b/im.test(content)) return 'Remediation Recommendation contains a "Background" section.';
@@ -318,6 +317,120 @@ function determineIssueType(testMethod, platform) {
   if (tm.includes('switch access')) return 'Switch Access';
   if (tm.includes('color contrast') || tm.includes('analyser') || tm.includes('analyzer')) return 'Color Contrast Tool';
   return 'Device-only';
+}
+
+// ── Native recommendation reference (S14) ───────────────────────────────────
+// Looks up the authoritative "Recommendation to fix" for a native issue in the
+// embedded NATIVE_RECOMMENDATIONS reference (generated verbatim from the Native
+// Mobile Excel: tabs 'native iOS' / 'native Android'). This is a deterministic
+// lookup-and-compare — no semantic similarity, no cross-platform fallback, no
+// closest-match. If an exact platform → checkpoint → row mapping can't be made
+// it reports an error rather than guessing.
+
+// Determine the native platform (iOS / Android) from the existing deterministic
+// audit metadata only (platform classification, then the OS / AT lines). Returns
+// 'iOS', 'Android', or null when it genuinely can't be determined.
+function resolveNativePlatform(platform, osVal, atVal) {
+  if (platform === 'iPad' || platform === 'iPhone') return 'iOS';
+  if (platform === 'Android Tablet' || platform === 'Android Mobile') return 'Android';
+  const os = String(osVal || '').toLowerCase();
+  const at = String(atVal || '').toLowerCase();
+  if (/\bios\b|ipados|iphone|ipad/.test(os) || at.includes('voiceover')) return 'iOS';
+  if (/android|one ui/.test(os) || at.includes('talkback')) return 'Android';
+  return null;
+}
+
+// Checkpoint key. The audit's Checkpoint column carries the full WCAG label with
+// the id in parentheses — e.g. "Name, Role, Value (4.1.2.a)" — while the Excel
+// tab stores the bare id "4.1.2.a". Extract the id (preferring a parenthesised
+// one), drop a " - N/A"-style trailer, remove spaces, and treat a dot before a
+// trailing letter the same as none, so "Name, Role, Value (4.1.2.a)" ==
+// "4.1.2.a" == "4.1.2 a" == "4.1.2a".
+function normCheckpoint(s) {
+  let t = String(s || '').trim().toLowerCase();
+  // Prefer an id inside parentheses that looks like a checkpoint (x.y[.z…][ .letter]).
+  const paren = t.match(/\(([^)]*\d+(?:\.\d+)+[^)]*)\)/);
+  let core = paren ? paren[1] : t;
+  const id = core.match(/\d+(?:\.\d+)+\s*\.?\s*[a-z]?/);   // "4.1.2.a" / "4.1.2 a" / "4.1.2"
+  if (id) core = id[0];
+  core = core.split(/\s[-–—]\s/)[0];        // drop a " - N/A" style trailer
+  core = core.replace(/\s+/g, '');          // "4.1.2 a" -> "4.1.2a"
+  core = core.replace(/\.([a-z])$/, '$1');  // "4.1.2.a" -> "4.1.2a"
+  return core;
+}
+
+// Deterministic comparison key for recommendation text. Formatting only —
+// substantive text and case are preserved. Normalises line endings; folds the
+// typographic characters Excel auto-inserts (curly quotes, dashes, ellipsis,
+// non-breaking spaces) to their ASCII equivalents so a ticket typed with plain
+// quotes still matches; collapses runs of spaces/tabs; trims each line; collapses
+// blank lines.
+// Structural header labels reviewers often keep or drop when copying a
+// recommendation (no remediation substance). Removed from both sides so their
+// presence/absence doesn't affect the match. Whole-line match: "HOW TO FIX:",
+// "HOW TO FIX: Swift:/SwiftUI:/Java:", and a bare "Using JAVA:/XML:/Swift:" etc.
+const REC_HEADER_LINE_RE = /^(?:how to fix\b[^\n]*:|using\s+(?:java|kotlin|xml|swift|swiftui)\s*:)$/i;
+function normRec(s) {
+  return String(s || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[‘’‚‛′]/g, "'")   // curly / prime single quotes
+    .replace(/[“”„‟″]/g, '"')   // curly / prime double quotes
+    .replace(/"{2,}/g, '"')      // collapse doubled quotes (CSV "" escaping artifact)
+    .replace(/[‒–—―−]/g, '-')   // en/em/figure dashes, minus
+    .replace(/…/g, '...')                            // ellipsis
+    .replace(/[   ]/g, ' ')                // non-breaking / narrow spaces
+    .replace(/[ \t]+/g, ' ')
+    .split('\n').map(l => l.trim())
+    .filter(l => !REC_HEADER_LINE_RE.test(l))         // drop boilerplate header labels
+    .join('\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
+// Loose key for matching a Summary's issue text against an Excel Issue
+// Description: normalise (lower-case, quotes, whitespace) then drop trailing
+// punctuation / brackets so "…display orientation." == "…display orientation".
+function normDesc(s) {
+  return normSummaryText(s).replace(/[)\].,;:!?\s]+$/, '').trim();
+}
+
+// Try to pin the exact Excel row for a native issue from its Summary. The Summary
+// is "<issue text> - <page> (<element>)", so compare its leading segment (before
+// the first " - ") against each row's Issue Description. A pin requires a strong
+// signal: normalised equality, or the full Issue Description appearing inside the
+// Summary text. Returns the row, or null when no confident pin is possible.
+function pinNativeRow(rows, summary) {
+  const seg = String(summary || '').split(/\s[-–—]\s/)[0];
+  const sIssue = normDesc(seg);
+  const sFull = normDesc(summary);
+  if (!sIssue) return null;
+  let hit = rows.find(r => normDesc(r.issueDescription) && normDesc(r.issueDescription) === sIssue);
+  if (!hit) {
+    const incl = rows
+      .filter(r => {
+        const d = normDesc(r.issueDescription);
+        return d && (sIssue.includes(d) || sFull.includes(d));
+      })
+      .sort((a, b) => normDesc(b.issueDescription).length - normDesc(a.issueDescription).length);
+    if (incl.length) hit = incl[0];
+  }
+  return hit || null;
+}
+
+// Gather the authoritative reference rows for a native issue. Returns one of:
+//   {status:'found', rows, pinned}   rows = all rows for platform+checkpoint;
+//                                     pinned = the exact row if the Summary
+//                                     confidently identifies it, else null.
+//   {status:'no-data'|'no-checkpoint'|'checkpoint-not-found'}
+// No cross-tab fallback and no closest-match: only the correct platform tab and
+// the exact checkpoint are ever considered.
+function findNativeRecommendation(platformKind, checkpoint, summary) {
+  if (typeof NATIVE_RECOMMENDATIONS === 'undefined' || !Array.isArray(NATIVE_RECOMMENDATIONS)) return { status: 'no-data' };
+  const cp = normCheckpoint(checkpoint);
+  if (!cp) return { status: 'no-checkpoint' };
+  const rows = NATIVE_RECOMMENDATIONS.filter(e => e.platform === platformKind && normCheckpoint(e.checkpoint) === cp);
+  if (!rows.length) return { status: 'checkpoint-not-found' };
+  return { status: 'found', rows, pinned: pinNativeRow(rows, summary) };
 }
 
 const CHECKPOINT_TYPES = {
@@ -895,6 +1008,113 @@ function runChecks(row) {
     }
   })();
 
+  // 14. Native recommendation vs authoritative Excel reference (native only).
+  // Deterministic lookup: platform → tab → checkpoint + Summary(Issue Description)
+  // → Recommendation to fix, then a formatting-normalised comparison against the
+  // audit's Remediation Recommendation — the field must EQUAL or START WITH an
+  // authoritative reference (trailing per-issue notes are allowed). No semantic
+  // matching, no cross-platform fallback, no closest-match; a broken mapping is
+  // reported as an ERROR rather than guessed. "RULE"/"BACKGROUND" must not appear.
+  (function () {
+    if (!native) {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'Only applies to Native app issues.' });
+      return;
+    }
+    const platformKind = resolveNativePlatform(platform, osVal, atVal);
+    if (!platformKind) {
+      checks.push({
+        id: 'S14', name: 'Native recommendation', status: 'fail',
+        note: 'ERROR – The Native platform (iOS or Android) could not be determined from the audit metadata, so the recommendation could not be validated.',
+      });
+      return;
+    }
+    const tabName = platformKind === 'iOS' ? 'native iOS' : 'native Android';
+    const lookup = findNativeRecommendation(platformKind, checkpoint, summary);
+    if (lookup.status === 'no-data') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'The Native recommendation reference is not loaded, so the recommendation could not be validated.' });
+      return;
+    }
+    if (lookup.status === 'no-checkpoint') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'ERROR – The issue has no Checkpoint, so the Native recommendation could not be looked up.' });
+      return;
+    }
+    if (lookup.status === 'checkpoint-not-found') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `ERROR – Checkpoint "${checkpoint}" was not found in the "${tabName}" reference tab.` });
+      return;
+    }
+    const rows = lookup.rows;
+    const pinned = lookup.pinned;
+    const cpId = (pinned || rows[0]).checkpoint;
+    const sectionsN = splitSections(desc);
+    const actual = fieldContent(sectionsN, desc, 'Remediation Recommendation') || fieldContent(sectionsN, desc, 'Recommendation to fix');
+    const mkDetail = (expected, issueDescription, matchMode) => ({
+      platform: platformKind, tab: tabName, checkpoint: cpId,
+      issueDescription: issueDescription || null, expected, actual,
+      variantCount: rows.length, matchMode,
+    });
+    if (!actual) {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'N/A – Remediation Recommendation is missing; S12 reports the missing required field.' });
+      return;
+    }
+    if (/^\s*RULE\b/im.test(actual)) {
+      const exp = (pinned || rows[0]).recommendation;
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "RULE" section, which must be removed.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      return;
+    }
+    if (/^\s*BACKGROUND\b/im.test(actual)) {
+      const exp = (pinned || rows[0]).recommendation;
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "BACKGROUND" section, which must be removed.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      return;
+    }
+    const na = normRec(actual);
+    // The authoritative recommendation must be present verbatim, but the ticket
+    // may append extra per-issue content (e.g. a "Note: applicable screens"
+    // list). So a reference matches when the field EQUALS it or STARTS WITH it.
+    const refMatches = (rec) => {
+      const recommendationBody = value => normRec(value).split(/\n\s*REFERENCE\s*:\s*/i)[0].trim();
+      const actualAlternatives = recommendationBody(actual).split(/\n\s*OR\s*\n/i).map(s => s.trim()).filter(Boolean);
+      const expectedAlternatives = recommendationBody(rec).split(/\n\s*OR\s*\n/i).map(s => s.trim()).filter(Boolean);
+
+      return actualAlternatives.some(actualBody => expectedAlternatives.some(nr => {
+        if (actualBody === nr || actualBody.startsWith(nr)) return true;
+
+        // Permit up to two omitted words in the submitted recommendation, while
+        // requiring every submitted word to remain in the authoritative order.
+        const expectedWords = nr.toLowerCase().match(/[a-z0-9]+(?:['’][a-z0-9]+)*/g) || [];
+        const actualWords = actualBody.toLowerCase().match(/[a-z0-9]+(?:['’][a-z0-9]+)*/g) || [];
+        let actualIndex = 0;
+        let omitted = 0;
+        for (const expectedWord of expectedWords) {
+          if (actualIndex < actualWords.length && expectedWord === actualWords[actualIndex]) {
+            actualIndex++;
+          } else {
+            omitted++;
+          }
+        }
+        return actualIndex === actualWords.length && omitted <= 2;
+      }));
+    };
+    if (pinned) {
+      // Summary confidently identified the exact row → compare against it only.
+      const ok = refMatches(pinned.recommendation);
+      checks.push(ok
+        ? { id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') }
+        : { id: 'S14', name: 'Native recommendation', status: 'fail', note: `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') });
+      return;
+    }
+    // Summary didn't identify a specific row → accept a match against any
+    // authoritative row for this platform + checkpoint.
+    const match = rows.find(r => refMatches(r.recommendation));
+    if (match) {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches an authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(match.recommendation, match.issueDescription, 'any') });
+    } else {
+      const note = rows.length > 1
+        ? `FAIL – Recommendation to fix does not match any of the ${rows.length} authoritative "${tabName}" references for checkpoint ${cpId}.`
+        : `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`;
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note, detail: mkDetail(rows[0].recommendation, rows[0].issueDescription, 'any') });
+    }
+  })();
+
   return {
     platform: platform || 'Unknown',
     native,
@@ -906,5 +1126,9 @@ function runChecks(row) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue, classifyCheckpoint, expectedTestMethod };
+  module.exports = {
+    runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue,
+    resolveNativePlatform, normCheckpoint, normRec, findNativeRecommendation,
+    classifyCheckpoint, expectedTestMethod,
+  };
 }

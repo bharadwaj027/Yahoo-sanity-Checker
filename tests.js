@@ -190,8 +190,8 @@ function runTests() {
     const s2 = fullSections(); delete s2['Remediation Recommendation'];
     const d = serialize(s2) + '\n\nRecommendation to fix:\nDo the thing.';
     const rr = runChecks(row({ Description: d }));
-    assertStatus('S12 remediation variant field name fails', rr, 'S12', 'fail');
-    record('S12 remediation variant-name message', (chk(rr, 'S12').note || '').includes('Invalid field name'), chk(rr, 'S12').note);
+    assertStatus('S12 Recommendation to fix alternative label passes', rr, 'S12', 'pass');
+    record('S12 accepted alternative label is not rejected', !(chk(rr, 'S12').note || '').includes('Invalid field name'), chk(rr, 'S12').note);
   })();
 
   // ── S12 — Native audits: conditional required fields ─────────────
@@ -288,6 +288,200 @@ function runTests() {
   s2['Actual results'] = 'The text does not have sufficient color contrast.';
   r = runChecks(row({ Summary: 'Link contrast is not at least 3:1 with surrounding text - Home page (nav link)', Checkpoint: '', Description: serialize(s2) }));
   assertStatus('S13 detected via summary wording', r, 'S13', 'fail');
+
+  // ── S14 — Native recommendation vs authoritative Excel reference ─
+  // Deterministic lookup + exact (formatting-normalised) comparison. Fixtures are
+  // built from the real NATIVE_RECOMMENDATIONS reference so tests track the data.
+  (function () {
+    if (typeof NATIVE_RECOMMENDATIONS === 'undefined') {
+      record('S14 reference data loaded', false, 'NATIVE_RECOMMENDATIONS global is missing');
+      return;
+    }
+    record('S14 reference data loaded', NATIVE_RECOMMENDATIONS.length > 0, 'entries=' + NATIVE_RECOMMENDATIONS.length);
+
+    // normRec tolerates CSV doubled-quote escaping ("" == ") so a ticket copied
+    // with escaped quotes still matches the authoritative reference.
+    if (typeof normRec === 'function') {
+      record('normRec collapses doubled quotes', normRec('setContentDescription(""Gesture Name"")') === normRec('setContentDescription("Gesture Name")'), 'doubled-quote normalization');
+      record('normRec keeps distinct text distinct', normRec('foo "bar"') !== normRec('foo "baz"'), 'sanity: different text stays different');
+    }
+
+    const iosE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'iOS' && e.issueDescription);
+    const andE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.issueDescription);
+    const androidContrastE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.checkpoint === '1.4.11.a');
+    const androidOrE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.checkpoint === '1.3.2.a' && e.issueDescription.startsWith('Screen reader focus falls'));
+
+    // Build a native issue: platformLine sets iOS/Android, Summary carries the
+    // Excel Issue Description, and the Remediation Recommendation section holds
+    // the recommendation text under test.
+    function nrRow(platformLine, entry, remediation, summaryExtra) {
+      const s = nativeSections();
+      const dev = platformLine.indexOf('Android') >= 0 ? 'Pixel Tablet' : 'iPhone 15';
+      const osl = platformLine.indexOf('Android') >= 0 ? 'Android 13' : 'iOS 17';
+      const at  = platformLine.indexOf('Android') >= 0 ? 'TalkBack' : 'VoiceOver';
+      s['Context'] = `Platform: ${platformLine}\nOperating System: ${osl}\nDevice Model: ${dev}\nTest Method: ${at}`;
+      s['Remediation Recommendation'] = remediation;
+      const summary = entry.issueDescription + (summaryExtra || ' - Home page (element)');
+      return row({ Checkpoint: entry.checkpoint, Summary: summary, Method: 'Manual', Description: serialize(s) });
+    }
+    const IOS = 'Native iPhone Mobile App', AND = 'Native Android Tablet App';
+
+    // iOS — exact recommendation → PASS
+    let rr = runChecks(nrRow(IOS, iosE, iosE.recommendation));
+    record('S14 native fixture classified iOS', chk(rr, 'S14') && (chk(rr, 'S14').detail || {}).platform === 'iOS', (chk(rr,'S14')||{}).note);
+    assertStatus('S14 iOS exact recommendation', rr, 'S14', 'pass');
+
+    // iOS — authoritative recommendation + an appended per-issue note → PASS
+    // (the field may START WITH the reference; trailing additions are allowed).
+    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation + '\n\nNote: This is applicable to the following screens\n- Inbox\n- Settings'));
+    assertStatus('S14 iOS recommendation + trailing note (prefix match)', rr, 'S14', 'pass');
+
+    // iOS — a LEADING addition before the reference → still FAIL (must start with it)
+    rr = runChecks(nrRow(IOS, iosE, 'Note: see below.\n\n' + iosE.recommendation));
+    assertStatus('S14 iOS leading text before reference', rr, 'S14', 'fail');
+
+    // Dropping a leading structural header line (e.g. "HOW TO FIX: Swift:") still
+    // matches — header labels are ignored on both sides.
+    (function () {
+      const noHeader = iosE.recommendation.replace(/^HOW TO FIX[^\n]*:\r?\n/i, '');
+      if (noHeader !== iosE.recommendation) {
+        const rH = runChecks(nrRow(IOS, iosE, noHeader));
+        assertStatus('S14 iOS recommendation with leading header dropped', rH, 'S14', 'pass');
+      }
+    })();
+
+    // iOS — a substantive change WITHIN the recommendation → FAIL (a mid-text edit
+    // breaks the prefix; only trailing additions are tolerated).
+    (function () {
+      const mid = Math.floor(iosE.recommendation.length / 2);
+      const modified = iosE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + iosE.recommendation.slice(mid);
+      rr = runChecks(nrRow(IOS, iosE, modified));
+      assertStatus('S14 iOS modified recommendation (mid-text)', rr, 'S14', 'fail');
+    })();
+
+    // iOS — Android recommendation pasted in → FAIL
+    rr = runChecks(nrRow(IOS, iosE, andE.recommendation));
+    assertStatus('S14 iOS with Android recommendation', rr, 'S14', 'fail');
+
+    // iOS — missing recommendation → FAIL
+    (function () {
+      const s = nativeSections();
+      s['Context'] = `Platform: ${IOS}\nOperating System: iOS 17\nDevice Model: iPhone 15\nTest Method: VoiceOver`;
+      delete s['Remediation Recommendation'];
+      const rMiss = runChecks(row({ Checkpoint: iosE.checkpoint, Summary: iosE.issueDescription + ' - Home page (x)', Method: 'Manual', Description: serialize(s) }));
+      assertStatus('S14 skipped when recommendation is missing', rMiss, 'S14', 'na');
+      record('S14 missing recommendation defers to S12', (chk(rMiss, 'S14').note || '').includes('S12'), chk(rMiss, 'S14').note);
+    })();
+
+    // Android — exact → PASS ; modified → FAIL ; iOS rec → FAIL
+    rr = runChecks(nrRow(AND, andE, andE.recommendation));
+    record('S14 native fixture classified Android', (chk(rr, 'S14').detail || {}).platform === 'Android', (chk(rr,'S14')||{}).note);
+    assertStatus('S14 Android exact recommendation', rr, 'S14', 'pass');
+
+    // Android real-data tolerance: the audit recommendation omits the word
+    // "color" from "background color" but otherwise matches the reference.
+    const androidMissingWord = androidContrastE.recommendation.replace('background color', 'background');
+    rr = runChecks(nrRow(AND, androidContrastE, androidMissingWord));
+    assertStatus('S14 Android recommendation with one omitted word', rr, 'S14', 'pass');
+
+    const androidMissingThreeWords = androidContrastE.recommendation.replace('background color', 'background').replace('either the inner or outer', 'either inner or outer');
+    rr = runChecks(nrRow(AND, androidContrastE, androidMissingThreeWords));
+    assertStatus('S14 Android recommendation with two omitted words', rr, 'S14', 'pass');
+
+    const androidMissingFourWords = androidMissingThreeWords.replace('user interface component', 'component');
+    rr = runChecks(nrRow(AND, androidContrastE, androidMissingFourWords));
+    assertStatus('S14 Android recommendation with more than two omitted words', rr, 'S14', 'fail');
+
+    const alternatives = androidOrE.recommendation.split(/\n\s*OR\s*\n/i);
+    rr = runChecks(nrRow(AND, androidOrE, alternatives[1]));
+    assertStatus('S14 accepts second OR recommendation alternative', rr, 'S14', 'pass');
+    rr = runChecks(nrRow(AND, androidOrE, alternatives.join('\n\nOR\n\n')));
+    assertStatus('S14 accepts both OR recommendation alternatives', rr, 'S14', 'pass');
+
+    (function () {
+      const mid = Math.floor(andE.recommendation.length / 2);
+      const modified = andE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + andE.recommendation.slice(mid);
+      rr = runChecks(nrRow(AND, andE, modified));
+      assertStatus('S14 Android modified recommendation (mid-text)', rr, 'S14', 'fail');
+    })();
+
+    rr = runChecks(nrRow(AND, andE, iosE.recommendation));
+    assertStatus('S14 Android with iOS recommendation', rr, 'S14', 'fail');
+
+    // Checkpoint not found in the correct tab → ERROR (reported as fail)
+    rr = runChecks(nrRow(IOS, { checkpoint: '9.9.9.z', issueDescription: iosE.issueDescription }, iosE.recommendation));
+    assertStatus('S14 checkpoint not found → ERROR', rr, 'S14', 'fail');
+    record('S14 checkpoint-not-found says ERROR', (chk(rr, 'S14').note || '').startsWith('ERROR'), chk(rr, 'S14').note);
+
+    // Formatting normalisation: leading/trailing whitespace → PASS
+    rr = runChecks(nrRow(IOS, iosE, '   \n' + iosE.recommendation + '   \n\n'));
+    assertStatus('S14 iOS whitespace-only difference', rr, 'S14', 'pass');
+
+    // Formatting normalisation: CRLF line endings + collapsed blank lines → PASS
+    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation.replace(/\n/g, '\r\n').replace(/\r\n/g, '\r\n\r\n')));
+    assertStatus('S14 iOS line-ending/blank-line difference', rr, 'S14', 'pass');
+
+    // Checkpoint format tolerance: "1.1.1.a" vs "1.1.1 a" still resolves the row
+    (function () {
+      const spaced = iosE.checkpoint.replace(/\.([a-z])$/i, ' $1');
+      if (spaced !== iosE.checkpoint) {
+        const rf = runChecks(nrRow(IOS, { checkpoint: spaced, issueDescription: iosE.issueDescription }, iosE.recommendation));
+        assertStatus('S14 checkpoint format-tolerant match', rf, 'S14', 'pass');
+      }
+    })();
+
+    // normCheckpoint: extract the id from a full WCAG label (real audit format)
+    if (typeof normCheckpoint === 'function') {
+      record('normCheckpoint parenthesised id', normCheckpoint('Name, Role, Value (4.1.2.a)') === '4.1.2a', normCheckpoint('Name, Role, Value (4.1.2.a)'));
+      record('normCheckpoint bare id', normCheckpoint('4.1.2.a') === '4.1.2a', normCheckpoint('4.1.2.a'));
+      record('normCheckpoint spaced id', normCheckpoint('4.1.2 a') === '4.1.2a', normCheckpoint('4.1.2 a'));
+      record('normCheckpoint N/A trailer', normCheckpoint('1.1.1.e - N/A') === '1.1.1e', normCheckpoint('1.1.1.e - N/A'));
+    }
+
+    // Checkpoint carried as a full WCAG label with the id in parentheses (the real
+    // audit format that produced the reported ERROR) must still resolve the row.
+    (function () {
+      const s = nativeSections();
+      s['Context'] = `Platform: ${IOS}\nOperating System: iOS 17\nDevice Model: iPhone 15\nTest Method: VoiceOver`;
+      s['Remediation Recommendation'] = iosE.recommendation;
+      const wrapped = 'Name, Role, Value (' + iosE.checkpoint + ')';
+      const rw = runChecks(row({ Checkpoint: wrapped, Summary: iosE.issueDescription + ' - Home page (x)', Method: 'Manual', Description: serialize(s) }));
+      assertStatus('S14 checkpoint as WCAG label with parenthesised id', rw, 'S14', 'pass');
+    })();
+
+    // RULE / BACKGROUND must not be present in the recommendation → FAIL
+    rr = runChecks(nrRow(IOS, iosE, 'RULE:\nSomething.\n\n' + iosE.recommendation));
+    assertStatus('S14 recommendation contains RULE → FAIL', rr, 'S14', 'fail');
+    record('S14 RULE message', (chk(rr, 'S14').note || '').includes('RULE'), chk(rr, 'S14').note);
+
+    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation + '\n\nBACKGROUND:\nSome background.'));
+    assertStatus('S14 recommendation contains BACKGROUND → FAIL', rr, 'S14', 'fail');
+
+    // Real-data shape: the Summary carries short text + page + element and does NOT
+    // contain the verbose Excel Issue Description, so the exact row can't be pinned.
+    // Any authoritative recommendation for the checkpoint+platform is then accepted
+    // verbatim (PASS); a rewritten recommendation is rejected (FAIL).
+    (function () {
+      const label = 'WCAG label (' + andE.checkpoint + ')';
+      const unrelated = 'Short issue phrasing here - Settings page (some element)';
+      const sOk = nativeSections();
+      sOk['Context'] = `Platform: ${AND}\nOperating System: Android 13\nDevice Model: Pixel Tablet\nTest Method: TalkBack`;
+      sOk['Remediation Recommendation'] = andE.recommendation;
+      const rOk = runChecks(row({ Checkpoint: label, Summary: unrelated, Method: 'Manual', Description: serialize(sOk) }));
+      assertStatus('S14 any-row fallback accepts verbatim rec', rOk, 'S14', 'pass');
+      record('S14 fallback uses any-row match mode', (chk(rOk, 'S14').detail || {}).matchMode === 'any', JSON.stringify((chk(rOk, 'S14').detail || {}).matchMode));
+
+      const sBad = nativeSections();
+      sBad['Context'] = `Platform: ${AND}\nOperating System: Android 13\nDevice Model: Pixel Tablet\nTest Method: TalkBack`;
+      sBad['Remediation Recommendation'] = 'A completely rewritten recommendation not taken from the reference sheet.';
+      const rBad = runChecks(row({ Checkpoint: label, Summary: unrelated, Method: 'Manual', Description: serialize(sBad) }));
+      assertStatus('S14 any-row fallback rejects rewritten rec', rBad, 'S14', 'fail');
+    })();
+
+    // Web issue → NA (does not apply)
+    rr = runChecks(row({ Description: serialize(fullSections()) }));
+    assertStatus('S14 web issue is NA', rr, 'S14', 'na');
+  })();
 
   // ── Checkpoint-owned Context / Test Method validation ────────────
   (function () {
@@ -400,7 +594,7 @@ function runTests() {
 
   // ── Regression — every check still produces a result ─────────────
   r = runChecks(row({ Description: serialize(fullSections()) }));
-  ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13'].forEach(id => {
+  ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12', 'S13', 'S14'].forEach(id => {
     record('regression: ' + id + ' produced a result', !!chk(r, id), 'check ' + id + ' missing from result');
   });
 

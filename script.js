@@ -18,6 +18,7 @@ const CHECK_LABELS = {
   S11: 'Summary validation',
   S12: 'Required fields',
   S13: 'Color contrast',
+  S14: 'Native recommendation',
 };
 const CHECK_KEYS = Object.keys(CHECK_LABELS);
 
@@ -312,10 +313,13 @@ function detailRowHtml(i) {
   const s11 = i.byId.S11;
   const s11Block = (s11 && s11.detail) ? summaryDetailHtml(s11) : '';
   const bodyFails = fails.filter(f => !(f.id === 'S11' && s11Block));
-  const body = bodyFails.length
-    ? bodyFails.map(f => `<div class="detail-line"><span class="dl-key">${f.id} ${escapeHtml(CHECK_LABELS[f.id] || f.name)}</span>${reasonHtml(f)}</div>`).join('')
+  const s14 = i.byId.S14;
+  const s14Block = (s14 && s14.detail) ? nativeRecDetailHtml(s14) : '';
+  const bodyFails2 = bodyFails.filter(f => !(f.id === 'S14' && s14Block));
+  const body = bodyFails2.length
+    ? bodyFails2.map(f => `<div class="detail-line"><span class="dl-key">${f.id} ${escapeHtml(CHECK_LABELS[f.id] || f.name)}</span>${reasonHtml(f)}</div>`).join('')
     : (fails.length ? '' : `<div class="detail-line">All ${CHECK_KEYS.length} checks passed for this issue.</div>`);
-  return `<tr class="detail-row"><td colspan="${colspan}"><div class="detail-inner">${validationBadgesHtml(i)}${s11Block}${body}</div></td></tr>`;
+  return `<tr class="detail-row"><td colspan="${colspan}"><div class="detail-inner">${validationBadgesHtml(i)}${s11Block}${s14Block}${body}</div></td></tr>`;
 }
 
 // The three new validations surfaced as an explicit status strip (req 4).
@@ -331,6 +335,7 @@ function validationBadgesHtml(i) {
       <span class="vitem">Summary Validation: ${statusPill(i.byId.S11)}</span>
       <span class="vitem">Required Fields Validation: ${statusPill(i.byId.S12)}</span>
       <span class="vitem">Color Contrast Validation: ${statusPill(i.byId.S13)}</span>
+      <span class="vitem">Native Recommendation: ${statusPill(i.byId.S14)}</span>
       <span class="vitem overall">Overall Status: <span class="vstatus ${overall === 'PASS' ? 'pass' : 'fail'}">${overall}</span></span>
     </div>`;
 }
@@ -354,6 +359,29 @@ function summaryDetailHtml(check) {
         ${row('Old (AXE) summary', d.oldSummary)}
         ${row('Expected (new) summary', d.newSummary)}
         ${fieldRows}
+      </div>
+    </div>`;
+}
+
+// Native recommendation (S14): show the authoritative Excel reference and the
+// audit's value side by side, plus the checkpoint/tab that were looked up.
+function nativeRecDetailHtml(check) {
+  const d = check.detail || {};
+  const pre = (label, val) => `<div class="cmp-row"><span class="cmp-label">${escapeHtml(label)}</span><pre class="cmp-pre">${escapeHtml(val || '(none provided)')}</pre></div>`;
+  const row = (label, val) => `<div class="cmp-row"><span class="cmp-label">${escapeHtml(label)}</span><span class="cmp-val">${escapeHtml(val || '(none)')}</span></div>`;
+  const ok = check.status === 'pass';
+  const verdict = ok
+    ? '<span class="vstatus pass">PASS</span> Recommendation matches the authoritative reference.'
+    : `<span class="vstatus fail">FAIL</span> ${escapeHtml(check.note || '')}`;
+  return `
+    <div class="detail-line summary-cmp">
+      <span class="dl-key">S14 ${escapeHtml(CHECK_LABELS.S14)}</span>
+      <div class="cmp-body">
+        <div class="cmp-verdict">${verdict}</div>
+        ${row('Reference tab', d.tab)}
+        ${row('Checkpoint', d.checkpoint)}
+        ${pre('Expected Recommendation', d.expected)}
+        ${pre('Actual Recommendation', d.actual)}
       </div>
     </div>`;
 }
