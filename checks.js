@@ -458,6 +458,20 @@ function classifyCheckpoint(checkpoint) {
   return null;
 }
 
+// Some checkpoints are a different type depending on the platform. On iOS
+// platforms (iOS Mobile Web, Native iOS) checkpoint 2.1.1 — Keyboard on desktop
+// and Android — is verified with the screen reader, so it is a Screen Reader
+// checkpoint there (AT required in the Context + the VoiceOver Test Method).
+// Every other checkpoint uses the platform-independent classifyCheckpoint result.
+function resolveCheckpointType(checkpoint, matrixPlatform) {
+  const m = String(checkpoint || '').match(/\b(\d+\.\d+\.\d+)(?:\.[a-z])?\b/);
+  const id3 = m ? m[1] : '';
+  if (id3 === '2.1.1' && (matrixPlatform === 'iOS Mobile Web' || matrixPlatform === 'Native iOS')) {
+    return 'Screen Reader';
+  }
+  return classifyCheckpoint(checkpoint);
+}
+
 // ── Centralized Context / Test-Method matrix (spec §8–§14) ──────────────────
 // Single authoritative source for the required Test Method of every supported
 // platform × checkpoint-type combination, keyed platform → checkpoint type. A
@@ -845,44 +859,51 @@ function runChecks(row) {
           issues.push(`Invalid Test Method for Automation issue. Expected: "Test Method: ${AUTOMATION_TEST_METHOD}".`);
         }
       } else {
-        if (checkpointType === 'Screen Reader') {
-          if (!contextHasAT) issues.push('Assistive Technology is required in the Context for Screen Reader checkpoints.');
-        } else if (contextHasAT) {
-          issues.push(`Assistive Technology must not be provided in the Context for ${checkpointType} checkpoints.`);
-        }
-        if (checkpointType !== 'Screen Reader' && AT_REFERENCE_RE.test(testMethod || '')) {
-          issues.push(`Assistive Technology must not be used in the Test Method for ${checkpointType} checkpoints.`);
-        }
-
-        // A Platform line may name several platforms; then the Test Method is a
-        // comma-separated list, one entry per platform. Matching is tolerant
-        // (testMethodMatches: right environment + tool named, exact phrasing /
-        // capitalisation / version suffixes / synonyms ignored). EVERY listed
-        // platform that has a rule must be covered by some entry; platforms with
-        // no rule for this type raise the Unsupported Platform message.
+        // Checkpoint type can depend on the platform (e.g. 2.1.1 is Keyboard on
+        // desktop / Android but a Screen Reader checkpoint on iOS). Resolve the
+        // platforms first, then the type per platform, then apply the AT rule and
+        // the Test Method for each. A Platform line may name several platforms;
+        // the Test Method is then a comma-separated list, one entry per platform,
+        // and EVERY listed platform must be covered by a tolerant-matching entry.
         const methodPlatforms = matrixPlatformsFor(rawPlatform, osVal, atVal);
         const platformsToCheck = methodPlatforms.length ? methodPlatforms : [checkpointPlatform(platform, osVal, atVal)];
         const tmEntries = String(testMethod || '').split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
-        const unsupported = platformsToCheck.filter(p => !expectedTestMethod(checkpointType, p));
-        const supported = platformsToCheck.filter(p => expectedTestMethod(checkpointType, p));
-        if (unsupported.length) {
-          issues.push(`No Test Method rule is currently defined for ${checkpointType} checkpoints on ${unsupported.join(', ')}. Do not infer or invent a Test Method.`);
+        const perPlatform = platformsToCheck.map(p => ({ p, type: resolveCheckpointType(checkpoint, p) }));
+
+        // Assistive Technology rule (per platform → aggregate): Screen Reader
+        // requires AT in the Context; every other type forbids it. When platforms
+        // disagree (a mixed issue), a Screen-Reader platform's requirement wins
+        // and the "no AT" side is not additionally flagged.
+        const requiresAT = perPlatform.some(x => x.type === 'Screen Reader');
+        const forbidType = (perPlatform.find(x => x.type && x.type !== 'Screen Reader') || {}).type;
+        if (requiresAT && !contextHasAT) {
+          issues.push('Assistive Technology is required in the Context for Screen Reader checkpoints.');
+        } else if (!requiresAT && forbidType && contextHasAT) {
+          issues.push(`Assistive Technology must not be provided in the Context for ${forbidType} checkpoints.`);
         }
-        if (testMethod) {
-          supported.forEach(p => {
-            const cls = tmEntries.map(e => classifyTestMethodEntry(e, checkpointType, p));
-            if (cls.some(c => c.code === 'ok')) return;                 // this platform is covered
-            const miss = cls.find(c => c.code === 'missing-suffix');
-            if (miss) {
-              // Screen Reader: right environment + screen-reader named, only the
-              // trailing wording is missing — give the specific guidance.
-              const msg = `${miss.suffixLabel} is missing after ${miss.tool} in the Test Method for ${p}.`;
-              if (!issues.includes(msg)) issues.push(msg);
-            } else {
-              issues.push(`Invalid or missing Test Method for ${checkpointType} checkpoint on ${p}. Expected: "${expectedTestMethod(checkpointType, p)}".`);
-            }
-          });
+        if (!requiresAT && forbidType && AT_REFERENCE_RE.test(testMethod || '')) {
+          issues.push(`Assistive Technology must not be used in the Test Method for ${forbidType} checkpoints.`);
         }
+
+        perPlatform.forEach(({ p, type }) => {
+          const expected = type ? expectedTestMethod(type, p) : null;
+          if (!expected) {
+            issues.push(`No Test Method rule is currently defined for ${type || 'this'} checkpoints on ${p}. Do not infer or invent a Test Method.`);
+            return;
+          }
+          if (!testMethod) return;   // a missing Test Method line is flagged separately above
+          const cls = tmEntries.map(e => classifyTestMethodEntry(e, type, p));
+          if (cls.some(c => c.code === 'ok')) return;                 // this platform is covered
+          const miss = cls.find(c => c.code === 'missing-suffix');
+          if (miss) {
+            // Screen Reader: right environment + screen-reader named, only the
+            // trailing wording is missing — give the specific guidance.
+            const msg = `${miss.suffixLabel} is missing after ${miss.tool} in the Test Method for ${p}.`;
+            if (!issues.includes(msg)) issues.push(msg);
+          } else {
+            issues.push(`Invalid or missing Test Method for ${type} checkpoint on ${p}. Expected: "${expected}".`);
+          }
+        });
       }
     }
 
@@ -1314,7 +1335,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue,
     resolveNativePlatform, normCheckpoint, normRec, findNativeRecommendation,
-    classifyCheckpoint, expectedTestMethod, checkpointPlatform, matrixPlatformsFor,
+    classifyCheckpoint, resolveCheckpointType, expectedTestMethod, checkpointPlatform, matrixPlatformsFor,
     testMethodMatches, classifyTestMethodEntry, TEST_METHOD_MATRIX, AUTOMATION_TEST_METHOD,
   };
 }

@@ -83,9 +83,15 @@ required in the Context (Screen Reader → required; every other type → not al
 - **3.3.2 is split by sub-id**: `3.3.2.b` → Screen Reader, while `3.3.2.a` and
   `3.3.2.c` → Visual. A bare `3.3.2` (no sub-id) matches none of these and is left
   to the dedicated "3.3.2 needs no Assistive Technology" handling in S5/S6.
-- **2.1.1 exception**: normally Keyboard, but when the checkpoint label reads
-  "…action cannot be performed with a screen reader turned on" it is treated as
-  Screen Reader.
+- **2.1.1 is platform-dependent**: Keyboard on Web and Android (Mobile Web /
+  Native Android), but a **Screen Reader** checkpoint on **iOS Mobile Web** and
+  **Native iOS** — on iOS it is verified with VoiceOver, so it requires Assistive
+  Technology in the Context and uses the VoiceOver Test Method
+  (`Safari on iPhone using VoiceOver screen reader` / `iPhone using VoiceOver
+  screen reader`). Implemented by `resolveCheckpointType(checkpoint, platform)`.
+- **2.1.1 text exception**: also treated as Screen Reader (on any platform) when
+  the checkpoint label reads "…action cannot be performed with a screen reader
+  turned on".
 - **Automation** is not a checkpoint type: an automation issue is identified first
   from the Method column and validated against the axe DevTools Test Method,
   regardless of the checkpoint's type.

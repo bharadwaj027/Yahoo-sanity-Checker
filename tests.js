@@ -588,6 +588,33 @@ function runTests() {
     // Existing CSV platform value "Native Android Tablet App" also maps to Native Android.
     assertStatus('Native Android via "Native Android Tablet App" value', { checks: [chk(runChecks(mrow({ Checkpoint: '1.3.1', Description: nativeCtx('Native Android Tablet App', 'Android using Talkback screen reader', 'TalkBack') })), 'S5')] }, 'S5', 'pass');
 
+    // 2.1.1 is platform-dependent: Keyboard on Web/Android, but a Screen Reader
+    // checkpoint on iOS (AT required + the VoiceOver Test Method).
+    if (typeof resolveCheckpointType === 'function') {
+      record('resolve 2.1.1 Web → Keyboard', resolveCheckpointType('2.1.1', 'Web') === 'Keyboard', resolveCheckpointType('2.1.1', 'Web'));
+      record('resolve 2.1.1 Android Mobile Web → Keyboard', resolveCheckpointType('2.1.1', 'Android Mobile Web') === 'Keyboard', '');
+      record('resolve 2.1.1 iOS Mobile Web → Screen Reader', resolveCheckpointType('2.1.1', 'iOS Mobile Web') === 'Screen Reader', '');
+      record('resolve 2.1.1 Native iOS → Screen Reader', resolveCheckpointType('2.1.1', 'Native iOS') === 'Screen Reader', '');
+      record('resolve 2.1.1 Native Android → Keyboard', resolveCheckpointType('2.1.1', 'Native Android') === 'Keyboard', '');
+      record('resolve 2.1.1 from WCAG label on iOS → Screen Reader', resolveCheckpointType('Keyboard (2.1.1.a)', 'Native iOS') === 'Screen Reader', '');
+    }
+    // Native iOS context builder with an iOS OS/device (nativeCtx hardcodes Android).
+    const iosNativeCtx = (tm, at) => serialize(Object.assign({}, nativeSections(), {
+      Context: `Platform: Native iOS\nOperating System: iOS 17\nDevice Model: iPhone 15\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${tm}`,
+    }));
+    // Web 2.1.1 stays Keyboard (no AT, keyboard Test Method).
+    assertStatus('2.1.1 Web keyboard valid', runChecks(mrow({ Checkpoint: '2.1.1', Description: webCtx('Web', 'Chrome on windows using keyboard', '') })), 'S5', 'pass');
+    // iOS Mobile Web 2.1.1 → Screen Reader: needs AT + VoiceOver Test Method.
+    assertStatus('2.1.1 iOS Mobile Web valid as Screen Reader', runChecks(mrow({ Checkpoint: '2.1.1', Description: webCtx('iOS Mobile Web', 'Safari on iPhone using VoiceOver screen reader', 'VoiceOver') })), 'S5', 'pass');
+    (function () {
+      const c = chk(runChecks(mrow({ Checkpoint: '2.1.1', Description: webCtx('iOS Mobile Web', 'Safari on iPhone using VoiceOver screen reader', '') })), 'S5');
+      assertStatus('2.1.1 iOS Mobile Web missing AT fails', { checks: [c] }, 'S5', 'fail');
+      record('2.1.1 iOS Mobile Web missing AT message', (c.note || '').includes('Assistive Technology is required'), c.note);
+    })();
+    assertStatus('2.1.1 iOS Mobile Web with keyboard Test Method fails', runChecks(mrow({ Checkpoint: '2.1.1', Description: webCtx('iOS Mobile Web', 'Safari on iPhone using keyboard', 'VoiceOver') })), 'S5', 'fail');
+    // Native iOS 2.1.1 → Screen Reader.
+    assertStatus('2.1.1 Native iOS valid as Screen Reader', runChecks(mrow({ Checkpoint: '2.1.1', Description: iosNativeCtx('iPhone using VoiceOver screen reader', 'VoiceOver') })), 'S5', 'pass');
+
     // Automation (§8F / §12) — identified first, independent of checkpoint type.
     function autoRow(testMethod, over) {
       const s = fullSections();
