@@ -436,6 +436,59 @@ function findNativeRecommendation(platformKind, checkpoint, summary) {
   return { status: 'found', rows, pinned: pinNativeRow(rows, summary) };
 }
 
+// The audit Summary is "<Auditor Summary> - <page name> (<element>)". Return its
+// leading Auditor-Summary segment (before the first " - "). This is the value the
+// Native iOS / Native Android mapping tab keys on.
+function nativeAuditorSummary(summary) {
+  return String(summary || '').split(/\s[-–—]\s/)[0];
+}
+
+// Map an audit issue's Auditor Summary back to the Native IDL Summary using the
+// per-platform mapping (NATIVE_SUMMARY_MAP, from native-summary-map.js), then
+// resolve THAT IDL Summary to its authoritative Recommendation in
+// NATIVE_RECOMMENDATIONS. The mapping is the source of truth: only the matching
+// platform tab is consulted, and the Recommendation is never inferred from the
+// checkpoint or a similar issue. Returns:
+//   {status:'found', expected:[{recommendation, idlSummary, auditorSummary, checkpoint}]}
+//   {status:'no-map'|'no-data'} reference not loaded
+//   {status:'no-summary'}       the issue has no usable Summary
+//   {status:'no-mapping', auditorSummary}      no Auditor-Summary match in the tab
+//   {status:'no-recommendation', auditorSummary} mapped, but no Recommendation on file
+// A checkpoint, when present, disambiguates an Auditor Summary shared across
+// checkpoints; an Auditor Summary shared by several IDL Summaries yields several
+// expected Recommendations (a match against any is accepted).
+function findNativeRecommendationByMapping(platformKind, checkpoint, summary) {
+  if (typeof NATIVE_SUMMARY_MAP === 'undefined' || !NATIVE_SUMMARY_MAP || !Array.isArray(NATIVE_SUMMARY_MAP[platformKind])) return { status: 'no-map' };
+  if (typeof NATIVE_RECOMMENDATIONS === 'undefined' || !Array.isArray(NATIVE_RECOMMENDATIONS)) return { status: 'no-data' };
+  const tab = NATIVE_SUMMARY_MAP[platformKind];
+  const aud = normDesc(nativeAuditorSummary(summary));
+  const audFull = normDesc(summary);
+  if (!aud) return { status: 'no-summary' };
+  const cp = normCheckpoint(checkpoint);
+  const cpOk = m => !cp || normCheckpoint(m.checkpoint) === cp;
+  // Prefer the Auditor-Summary segment; fall back to the whole Summary (an issue
+  // whose Summary is only the Auditor Summary, with no " - page" suffix).
+  let matches = tab.filter(m => cpOk(m) && normDesc(m.auditorSummary) === aud);
+  if (!matches.length) matches = tab.filter(m => cpOk(m) && normDesc(m.auditorSummary) === audFull);
+  if (!matches.length) return { status: 'no-mapping', auditorSummary: nativeAuditorSummary(summary).trim() };
+  const expected = [];
+  const seen = new Set();
+  matches.forEach(m => {
+    const mcp = normCheckpoint(m.checkpoint);
+    const idl = normDesc(m.idlSummary);
+    NATIVE_RECOMMENDATIONS.forEach(e => {
+      if (e.platform === platformKind && normCheckpoint(e.checkpoint) === mcp && normDesc(e.issueDescription) === idl) {
+        const key = mcp + ' ' + normRec(e.recommendation);
+        if (seen.has(key)) return;
+        seen.add(key);
+        expected.push({ recommendation: e.recommendation, idlSummary: m.idlSummary, auditorSummary: m.auditorSummary, checkpoint: e.checkpoint });
+      }
+    });
+  });
+  if (!expected.length) return { status: 'no-recommendation', auditorSummary: nativeAuditorSummary(summary).trim() };
+  return { status: 'found', expected };
+}
+
 // Order the checkpoint types are declared in checkpoint-classification.md and
 // tried in classifyCheckpoint (Screen Reader is resolved first, separately).
 const CHECKPOINT_TYPE_ORDER = ['Screen Reader', 'Visual', 'Color', 'Text Spacing', 'Keyboard'];
@@ -1330,13 +1383,16 @@ function runChecks(row) {
     }
   })();
 
-  // 14. Native recommendation vs authoritative Excel reference (native only).
-  // Deterministic lookup: platform → tab → checkpoint + Summary(Issue Description)
-  // → Recommendation to fix, then a formatting-normalised comparison against the
-  // audit's Remediation Recommendation — the field must EQUAL or START WITH an
-  // authoritative reference (trailing per-issue notes are allowed). No semantic
-  // matching, no cross-platform fallback, no closest-match; a broken mapping is
-  // reported as an ERROR rather than guessed. "RULE"/"BACKGROUND" must not appear.
+  // 14. Native recommendation vs authoritative reference (native only).
+  // Mapping-driven: the issue's Auditor Summary is mapped back to the Native IDL
+  // Summary via the per-platform tab of NATIVE_SUMMARY_MAP (iOS issues use the
+  // Native iOS tab; Android issues the Native Android tab — never cross), and that
+  // IDL Summary selects the authoritative Recommendation in NATIVE_RECOMMENDATIONS.
+  // The audit's Remediation Recommendation must then EQUAL or START WITH that
+  // Recommendation (trailing per-issue notes allowed). The Recommendation is never
+  // inferred from the checkpoint or a similar issue: if the Auditor Summary has no
+  // mapping, the issue is reported for manual verification. "RULE"/"BACKGROUND"
+  // must not appear in the Recommendation (unchanged).
   (function () {
     if (!native) {
       checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'Only applies to Native app issues.' });
@@ -1351,44 +1407,45 @@ function runChecks(row) {
       return;
     }
     const tabName = platformKind === 'iOS' ? 'native iOS' : 'native Android';
-    const lookup = findNativeRecommendation(platformKind, checkpoint, summary);
-    if (lookup.status === 'no-data') {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'The Native recommendation reference is not loaded, so the recommendation could not be validated.' });
-      return;
-    }
-    if (lookup.status === 'no-checkpoint') {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'ERROR – The issue has no Checkpoint, so the Native recommendation could not be looked up.' });
-      return;
-    }
-    if (lookup.status === 'checkpoint-not-found') {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `ERROR – Checkpoint "${checkpoint}" was not found in the "${tabName}" reference tab.` });
-      return;
-    }
-    const rows = lookup.rows;
-    const pinned = lookup.pinned;
-    const cpId = (pinned || rows[0]).checkpoint;
     const sectionsN = splitSections(desc);
     const actual = fieldContent(sectionsN, desc, 'Remediation Recommendation') || fieldContent(sectionsN, desc, 'Recommendation to fix');
-    const mkDetail = (expected, issueDescription, matchMode) => ({
-      platform: platformKind, tab: tabName, checkpoint: cpId,
-      issueDescription: issueDescription || null, expected, actual,
-      variantCount: rows.length, matchMode,
+    const mkDetail = (expected, issueDescription, auditorSummary, cpId) => ({
+      platform: platformKind, tab: tabName, checkpoint: cpId || normCheckpoint(checkpoint),
+      issueDescription: issueDescription || null, auditorSummary: auditorSummary || null,
+      expected: expected || null, actual, matchMode: 'mapping',
     });
     if (!actual) {
       checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'N/A – Remediation Recommendation is missing; S12 reports the missing required field.' });
       return;
     }
+    // "RULE"/"BACKGROUND" must never appear — enforced independently of the mapping.
     if (/^\s*RULE\b/im.test(actual)) {
-      const exp = (pinned || rows[0]).recommendation;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "RULE" section, which must be removed.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "RULE" section, which must be removed.', detail: mkDetail(null, null, nativeAuditorSummary(summary).trim()) });
       return;
     }
     if (/^\s*BACKGROUND\b/im.test(actual)) {
-      const exp = (pinned || rows[0]).recommendation;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "BACKGROUND" section, which must be removed.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "BACKGROUND" section, which must be removed.', detail: mkDetail(null, null, nativeAuditorSummary(summary).trim()) });
       return;
     }
-    const na = normRec(actual);
+
+    const lookup = findNativeRecommendationByMapping(platformKind, checkpoint, summary);
+    if (lookup.status === 'no-map' || lookup.status === 'no-data') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'The Native summary→recommendation mapping is not loaded, so the recommendation could not be validated.' });
+      return;
+    }
+    if (lookup.status === 'no-summary') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'ERROR – The issue has no Summary, so the Native recommendation could not be mapped.' });
+      return;
+    }
+    if (lookup.status === 'no-mapping') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `MANUAL – The Auditor Summary "${lookup.auditorSummary}" has no mapping in the "${tabName}" tab, so the expected Recommendation could not be determined. Please verify the Recommendation manually.`, detail: mkDetail(null, null, lookup.auditorSummary) });
+      return;
+    }
+    if (lookup.status === 'no-recommendation') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `MANUAL – The Auditor Summary "${lookup.auditorSummary}" maps to a Native IDL Summary with no Recommendation on file. Please verify the Recommendation manually.`, detail: mkDetail(null, null, lookup.auditorSummary) });
+      return;
+    }
+
     // The authoritative recommendation must be present verbatim, but the ticket
     // may append extra per-issue content (e.g. a "Note: applicable screens"
     // list). So a reference matches when the field EQUALS it or STARTS WITH it.
@@ -1416,24 +1473,18 @@ function runChecks(row) {
         return actualIndex === actualWords.length && omitted <= 2;
       }));
     };
-    if (pinned) {
-      // Summary confidently identified the exact row → compare against it only.
-      const ok = refMatches(pinned.recommendation);
-      checks.push(ok
-        ? { id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') }
-        : { id: 'S14', name: 'Native recommendation', status: 'fail', note: `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') });
-      return;
-    }
-    // Summary didn't identify a specific row → accept a match against any
-    // authoritative row for this platform + checkpoint.
-    const match = rows.find(r => refMatches(r.recommendation));
+
+    // The mapped Auditor Summary determines the expected Recommendation(s). When an
+    // Auditor Summary maps to several IDL Summaries, a match against ANY is accepted.
+    const match = lookup.expected.find(x => refMatches(x.recommendation));
     if (match) {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches an authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(match.recommendation, match.issueDescription, 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches the authoritative "${tabName}" reference mapped from the Auditor Summary "${match.auditorSummary}".`, detail: mkDetail(match.recommendation, match.idlSummary, match.auditorSummary, normCheckpoint(match.checkpoint)) });
     } else {
-      const note = rows.length > 1
-        ? `FAIL – Recommendation to fix does not match any of the ${rows.length} authoritative "${tabName}" references for checkpoint ${cpId}.`
-        : `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note, detail: mkDetail(rows[0].recommendation, rows[0].issueDescription, 'any') });
+      const first = lookup.expected[0];
+      const note = lookup.expected.length > 1
+        ? `FAIL – Recommendation to fix does not match any of the ${lookup.expected.length} authoritative "${tabName}" references mapped from the Auditor Summary "${first.auditorSummary}".`
+        : `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference mapped from the Auditor Summary "${first.auditorSummary}".`;
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note, detail: mkDetail(first.recommendation, first.idlSummary, first.auditorSummary, normCheckpoint(first.checkpoint)) });
     }
   })();
 
@@ -1461,7 +1512,8 @@ if (typeof module !== 'undefined' && module.exports && typeof require !== 'undef
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue,
-    resolveNativePlatform, normCheckpoint, normRec, findNativeRecommendation,
+    resolveNativePlatform, normCheckpoint, normRec, normDesc, findNativeRecommendation,
+    findNativeRecommendationByMapping, nativeAuditorSummary,
     classifyCheckpoint, resolveCheckpointType, expectedTestMethod, checkpointPlatform, matrixPlatformsFor,
     testMethodMatches, classifyTestMethodEntry, TEST_METHOD_MATRIX, AUTOMATION_TEST_METHOD,
     parseCheckpointClassification, loadCheckpointClassification, DEFAULT_CHECKPOINT_TYPES,
