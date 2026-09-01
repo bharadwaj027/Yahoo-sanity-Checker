@@ -45,6 +45,23 @@ const platformFilter= document.getElementById('platformFilter');
 const methodFilter  = document.getElementById('methodFilter');
 const statusFilter  = document.getElementById('statusFilter');
 
+// ── checkpoint classification (S5 source of truth) ────────────
+// Load the checkpoint → type classification from checkpoint-classification.md so
+// S5 validates against that file, not the fallback baked into checks.js. Fetch it
+// once at startup; every check run awaits this first (see handleFile). If the fetch
+// fails — e.g. the page was opened from file:// where fetch is blocked — checks.js
+// keeps its embedded copy, so the tool still works. Cache-busted like the scripts.
+const classificationReady = (function loadClassification() {
+  if (typeof loadCheckpointClassification !== 'function' || typeof fetch !== 'function') {
+    return Promise.resolve('default');
+  }
+  const v = (typeof window !== 'undefined' && window.__ASSET_V) ? ('?v=' + window.__ASSET_V) : '';
+  return fetch('checkpoint-classification.md' + v)
+    .then(res => (res.ok ? res.text() : Promise.reject(new Error('HTTP ' + res.status))))
+    .then(md => loadCheckpointClassification(md))
+    .catch(() => 'default');   // keep the embedded fallback in checks.js
+})();
+
 // ── upload wiring ─────────────────────────────────────────────
 browseBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
@@ -74,7 +91,7 @@ resetBtn.addEventListener('click', () => {
   uploadScreen.classList.remove('hidden');
 });
 
-function handleFile(file) {
+async function handleFile(file) {
   if (!/\.csv$/i.test(file.name)) {
     uploadStatus.textContent = 'Please choose a .csv export from axe Auditor.';
     uploadStatus.classList.add('error');
@@ -82,6 +99,9 @@ function handleFile(file) {
   }
   uploadStatus.classList.remove('error');
   uploadStatus.textContent = `Parsing ${file.name}…`;
+  // Make sure the checkpoint classification (from checkpoint-classification.md) is
+  // loaded before any issue is checked, so S5 uses the file's classification.
+  await classificationReady;
   Papa.parse(file, {
     header: true,
     skipEmptyLines: true,

@@ -582,9 +582,24 @@ function runTests() {
     assertStatus('Native Android Color rejects AT', { checks: [naS5('1.4.3', 'Android using Deque color contrast Analyser', 'TalkBack')] }, 'S5', 'fail');
     assertStatus('Native Android Visual valid', { checks: [naS5('2.4.2', 'Android', '')] }, 'S5', 'pass');
     assertStatus('Native Android Text Spacing unsupported', { checks: [naS5('1.4.12', 'Android', '')] }, 'S5', 'fail');
-    record('Native Android Text Spacing unsupported message', naS5('1.4.12', 'Android', '').note.includes('No Test Method rule is currently defined for Text Spacing checkpoints on Native Android'), naS5('1.4.12', 'Android', '').note);
+    record('Native Android Text Spacing unsupported message', naS5('1.4.12', 'Android', '').note.includes('1.4.12 is not applicable in Native Android. Please check manually.'), naS5('1.4.12', 'Android', '').note);
     assertStatus('Native Android Keyboard unsupported', { checks: [naS5('2.4.7', 'Android', '')] }, 'S5', 'fail');
-    record('Native Android Keyboard unsupported message', naS5('2.4.7', 'Android', '').note.includes('No Test Method rule is currently defined for Keyboard checkpoints on Native Android'), naS5('2.4.7', 'Android', '').note);
+    record('Native Android Keyboard unsupported message', naS5('2.4.7', 'Android', '').note.includes('2.4.7 is not applicable in Native Android. Please check manually.'), naS5('2.4.7', 'Android', '').note);
+
+    // Platform applicability from the matrix: no Test Method rule for a checkpoint +
+    // platform → the "[Checkpoint] is not applicable in [Platform]. Please check
+    // manually." error, with no inferred/borrowed/generic Test Method. Example from
+    // the spec: a Keyboard checkpoint on iOS Mobile Web (that cell is null; 2.1.1 is
+    // excluded because it is a Screen Reader checkpoint on iOS, so use 2.4.7).
+    const imwS5 = (cp, tm, at) => chk(runChecks(mrow({ Checkpoint: cp, Description: webCtx('iOS Mobile Web', tm, at) })), 'S5');
+    assertStatus('iOS Mobile Web Keyboard unsupported', { checks: [imwS5('2.4.7', 'Safari on iPhone using keyboard', '')] }, 'S5', 'fail');
+    record('iOS Mobile Web Keyboard not-applicable message',
+      imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note.includes('2.4.7 is not applicable in iOS Mobile Web. Please check manually.'),
+      imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note);
+    // The not-applicable error must NOT invent or borrow a Test Method from another platform.
+    record('iOS Mobile Web Keyboard: no inferred Test Method',
+      !/Expected:/.test(imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note),
+      imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note);
     // Existing CSV platform value "Native Android Tablet App" also maps to Native Android.
     assertStatus('Native Android via "Native Android Tablet App" value', { checks: [chk(runChecks(mrow({ Checkpoint: '1.3.1', Description: nativeCtx('Native Android Tablet App', 'Android using Talkback screen reader', 'TalkBack') })), 'S5')] }, 'S5', 'pass');
 
@@ -638,6 +653,26 @@ function runTests() {
     assertStatus('Automation with AT only in CSV column passes', autoRow('Chrome on Windows using axe DevTools Chrome browser extension', { 'Assistive technology': 'NVDA' }), 'S5', 'pass');
     // "Automation" spelling of the Method column is honoured too
     assertStatus('Automation ("Automation" spelling) wrong Test Method fails', autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Automation' }), 'S5', 'fail');
+
+    // ── Automation 4.1.2 must NEVER require Assistive Technology ──────
+    // The issue type is determined first: an axe DevTools Test Method identifies an
+    // Automation issue even when the Method column is blank or mislabelled, so a
+    // 4.1.2 Automation issue with an empty Assistive Technology value must PASS and
+    // must not be told to add AT (regression: it was validated as a Screen-Reader
+    // checkpoint and wrongly demanded AT).
+    const AXE_TM = 'Chrome on Windows using axe DevTools Chrome browser extension';
+    ['', 'Manual', 'automated (axe)', 'Automated'].forEach(m => {
+      const s5 = chk(autoRow(AXE_TM, { Method: m }), 'S5');
+      assertStatus(`Automation 4.1.2 passes with empty AT (Method="${m}")`, { checks: [s5] }, 'S5', 'pass');
+      record(`Automation 4.1.2 does not require AT (Method="${m}")`,
+        !((s5.note || '').includes('Assistive Technology is required')), s5.note);
+    });
+    // A genuine Screen-Reader 4.1.2 issue (NVDA Test Method, not automation) still
+    // requires AT when it is missing — the fix must not weaken that rule.
+    record('Manual 4.1.2 Screen Reader still requires AT when missing',
+      (chk(autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Manual' }), 'S5').note || '')
+        .includes('Assistive Technology is required'),
+      chk(autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Manual' }), 'S5').note);
 
     // Case-insensitive Test Method: "Chrome on Windows" (capital W) == matrix "Chrome on windows"
     assertStatus('Visual Web accepts capitalised "Chrome on Windows"', runChecks(mrow({ Checkpoint: '2.4.2', Description: webCtx('Web', 'Chrome on Windows', '') })), 'S5', 'pass');
@@ -805,6 +840,65 @@ function runTests() {
     record('non-3.3.2: no 3.3.2 Step message in S6', !((chk(r, 'S6').note || '').includes('Step 1 should not start with')), chk(r, 'S6').note);
   })();
 
+  // ── S6 — Issue Type from checkpoint-classification.md + Step 1 ────
+  // The Issue Type is taken from the checkpoint classification (never inferred from
+  // the Test Method), and a Screen Reader checkpoint's Step 1 must turn the screen
+  // reader on first — "Open the above-mentioned URL." is wrong there.
+  (function () {
+    const ctxLine = (plat, tm, at) => `Platform: ${plat}\nOperating System: Windows 11\nBrowser: Chrome 120\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${tm}`;
+    const s6row = (cp, method, ctx, steps) => {
+      const s = fullSections();
+      s['Context'] = ctx;
+      s['Steps to reproduce'] = steps;
+      return runChecks(row({ Checkpoint: cp, Method: method, Summary: 'Issue - Home page (el)', Description: serialize(s) }));
+    };
+    const NVDA = 'Chrome on Windows using NVDA Assistive Technology';
+    const AXE = 'Chrome on Windows using axe DevTools Chrome browser extension';
+    const OPEN = '1. Open the above-mentioned URL.\n2. Navigate to the element.\n3. Observe.';
+    const SR1 = '1. Turn on the screen reader.\n2. Navigate to the element.\n3. Observe.';
+
+    // Manual Screen Reader checkpoint: "Open the URL" Step 1 is WRONG (the reported bug).
+    const srOpen = s6row('4.1.2', 'Manual', ctxLine('Web', NVDA, 'NVDA'), OPEN);
+    assertStatus('S6 SR checkpoint with "Open the URL" Step 1 fails', srOpen, 'S6', 'fail');
+    record('S6 SR checkpoint asks for the "Turn on the screen reader." Step 1',
+      (chk(srOpen, 'S6').note || '').includes('Turn on the screen reader'), chk(srOpen, 'S6').note);
+    assertStatus('S6 SR checkpoint with screen-reader Step 1 passes',
+      s6row('4.1.2', 'Manual', ctxLine('Web', NVDA, 'NVDA'), SR1), 'S6', 'pass');
+
+    // Automation Screen Reader checkpoint: open-URL Step 1 is correct (no SR step).
+    assertStatus('S6 automation SR checkpoint: open-URL Step 1 passes',
+      s6row('4.1.2', 'Automated', ctxLine('Web', AXE, ''), '1. Open the above-mentioned URL.\n2. Press F12 to open the browser Inspect panel.\n3. Observe.'), 'S6', 'pass');
+
+    // Non-SR checkpoint (Keyboard): Step 1 must NOT turn on a screen reader.
+    assertStatus('S6 Keyboard checkpoint: open-URL Step 1 passes',
+      s6row('2.4.7', 'Manual', ctxLine('Web', 'Chrome on windows using keyboard', ''), OPEN), 'S6', 'pass');
+    assertStatus('S6 Keyboard checkpoint: screen-reader Step 1 fails',
+      s6row('2.4.7', 'Manual', ctxLine('Web', 'Chrome on windows using keyboard', ''), SR1), 'S6', 'fail');
+
+    // No Test Method rule for the checkpoint + platform → not applicable, and no
+    // invented screen-reader step (Keyboard on iOS Mobile Web).
+    const naR = s6row('2.4.7', 'Manual', ctxLine('iOS Mobile Web', 'Safari on iPhone using keyboard', ''), OPEN);
+    assertStatus('S6 Keyboard on iOS Mobile Web → not applicable (fail)', naR, 'S6', 'fail');
+    record('S6 not-applicable message',
+      (chk(naR, 'S6').note || '').includes('2.4.7 is not applicable in iOS Mobile Web. Please check manually.'), chk(naR, 'S6').note);
+    record('S6 not-applicable does not invent a screen-reader step',
+      !((chk(naR, 'S6').note || '').includes('Turn on the screen reader')), chk(naR, 'S6').note);
+  })();
+
+  // ── S9 & S12 both report a MISSING Screen Name (same field) ──────
+  (function () {
+    const s = fullSections();
+    delete s['Screen Name'];
+    const r = runChecks(row({ Checkpoint: '4.1.2', Method: 'Automated', Summary: 'Button missing name - Home page (btn)', Description: serialize(s) }));
+    assertStatus('S9 flags a missing Screen Name', r, 'S9', 'fail');
+    record('S9 clearly says the Screen Name is missing', (chk(r, 'S9').note || '').toLowerCase().includes('screen name is missing'), chk(r, 'S9').note);
+    assertStatus('S12 flags a missing Screen Name', r, 'S12', 'fail');
+    record('S12 clearly says the Screen Name is missing', (chk(r, 'S12').note || '').includes('Screen Name is missing'), chk(r, 'S12').note);
+    // Present Screen Name → S12 no longer reports it missing.
+    const r2 = runChecks(row({ Checkpoint: '4.1.2', Method: 'Automated', Description: serialize(fullSections()) }));
+    record('S12 does not report Screen Name missing when present', !((chk(r2, 'S12').note || '').includes('Screen Name is missing')), chk(r2, 'S12').note);
+  })();
+
   // ── Checkpoint classification matches the authoritative list ─────
   // Guards checkpoint-classification.md against CHECKPOINT_TYPES / classifyCheckpoint.
   (function () {
@@ -815,6 +909,16 @@ function runTests() {
       'Text Spacing': ['1.4.12'],
       'Keyboard': ['2.1.1', '2.1.2', '2.1.4', '2.4.1', '2.4.3', '2.4.7', '2.4.11', '3.2.1', '3.2.2'],
     };
+    // Embedded fallback in checks.js still mirrors the authoritative list.
+    if (typeof DEFAULT_CHECKPOINT_TYPES !== 'undefined') {
+      Object.keys(AUTHORITATIVE).forEach(type => {
+        record(`DEFAULT_CHECKPOINT_TYPES matches doc: ${type}`,
+          (DEFAULT_CHECKPOINT_TYPES[type] || []).join(',') === AUTHORITATIVE[type].join(','),
+          `code=${(DEFAULT_CHECKPOINT_TYPES[type] || []).join(',')}`);
+      });
+    }
+    // The live map S5 uses (embedded fallback in the browser test; the real
+    // checkpoint-classification.md file when run under Node) matches the list.
     if (typeof CHECKPOINT_TYPES !== 'undefined') {
       Object.keys(AUTHORITATIVE).forEach(type => {
         record(`CHECKPOINT_TYPES matches doc: ${type}`,
@@ -829,6 +933,60 @@ function runTests() {
         record(`classify ${cp} → ${type}`, classifyCheckpoint(cp) === type, `got ${classifyCheckpoint(cp)}`);
       });
     });
+
+    // ── The .md file is the source of truth: parser + loader drive S5 ──
+    // Prove that classifyCheckpoint (and therefore S5) follows whatever
+    // checkpoint-classification.md says, not a hard-coded table.
+    if (typeof parseCheckpointClassification === 'function' && typeof loadCheckpointClassification === 'function') {
+      const mdFrom = m => Object.keys(m).map(t => `## ${t}\n\n` + m[t].map(id => `- ${id}`).join('\n')).join('\n\n');
+
+      // Parser reads the documented "## Type" / "- id" shape (and ignores the
+      // level-1 title + a Notes section with prose bullets).
+      const sampleMd = '# Title\n\n' + mdFrom(AUTHORITATIVE) +
+        '\n\n## Notes\n\n- **3.3.2 is split** into things that are not ids.\n';
+      const parsed = parseCheckpointClassification(sampleMd);
+      Object.keys(AUTHORITATIVE).forEach(type => {
+        record(`parse checkpoint-classification.md: ${type}`,
+          !!parsed && (parsed[type] || []).join(',') === AUTHORITATIVE[type].join(','),
+          `got ${parsed && (parsed[type] || []).join(',')}`);
+      });
+
+      // Loading the canonical md yields the file source and the same classification.
+      record('load canonical md → file source',
+        loadCheckpointClassification(mdFrom(AUTHORITATIVE)) === 'checkpoint-classification.md',
+        `source ${typeof getCheckpointClassificationSource === 'function' ? getCheckpointClassificationSource() : '(n/a)'}`);
+      record('after load: 1.4.10 is Visual', classifyCheckpoint('1.4.10') === 'Visual', classifyCheckpoint('1.4.10'));
+
+      // Reclassification flows through: move 1.4.10 from Visual → Color in the md
+      // and S5's classifier must follow it (was Visual, now Color).
+      const reclassified = JSON.parse(JSON.stringify(AUTHORITATIVE));
+      reclassified['Visual'] = reclassified['Visual'].filter(id => id !== '1.4.10');
+      reclassified['Color'] = reclassified['Color'].concat('1.4.10');
+      loadCheckpointClassification(mdFrom(reclassified));
+      record('reclassify in md: 1.4.10 → Color is honoured', classifyCheckpoint('1.4.10') === 'Color', classifyCheckpoint('1.4.10'));
+
+      // Verify the reclassification reaches S5's actual output: a 1.4.10 Web issue
+      // is now a Color checkpoint, so the Color Test Method is required.
+      (function () {
+        const s = fullSections();
+        s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: Chrome on windows';
+        const rr = runChecks(row({ Checkpoint: '1.4.10', Method: 'Manual', Summary: 'Low contrast text - Home page (label)', Description: serialize(s) }));
+        record('reclassify in md reaches S5', (chk(rr, 'S5').note || '').includes('Color'), chk(rr, 'S5').note);
+      })();
+
+      // Malformed md (a whole type heading missing) is rejected → embedded fallback
+      // stays in effect, so S5 never loses a checkpoint type to a bad file.
+      const partial = JSON.parse(JSON.stringify(AUTHORITATIVE));
+      delete partial['Keyboard'];
+      record('malformed md (missing type) keeps fallback',
+        loadCheckpointClassification(mdFrom(partial)) === 'default',
+        'expected default source for a structurally incomplete file');
+      record('empty md keeps fallback', loadCheckpointClassification('') === 'default', 'empty text should not replace the map');
+
+      // Restore the canonical classification for the remaining tests.
+      loadCheckpointClassification(mdFrom(AUTHORITATIVE));
+      record('restore canonical: 1.4.10 is Visual again', classifyCheckpoint('1.4.10') === 'Visual', classifyCheckpoint('1.4.10'));
+    }
   })();
 
   // ── Regression — every check still produces a result ─────────────
