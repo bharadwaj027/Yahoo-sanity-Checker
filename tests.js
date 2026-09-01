@@ -289,15 +289,22 @@ function runTests() {
   r = runChecks(row({ Summary: 'Link contrast is not at least 3:1 with surrounding text - Home page (nav link)', Checkpoint: '', Description: serialize(s2) }));
   assertStatus('S13 detected via summary wording', r, 'S13', 'fail');
 
-  // ── S14 — Native recommendation vs authoritative Excel reference ─
-  // Deterministic lookup + exact (formatting-normalised) comparison. Fixtures are
-  // built from the real NATIVE_RECOMMENDATIONS reference so tests track the data.
+  // ── S14 — Native recommendation via the Auditor-Summary mapping ──
+  // The audit issue carries an Auditor Summary; the per-platform mapping
+  // (NATIVE_SUMMARY_MAP) maps it back to the Native IDL Summary, which selects the
+  // authoritative Recommendation in NATIVE_RECOMMENDATIONS. Fixtures build the
+  // Summary from a real Auditor Summary so tests track both the sheet + reference.
   (function () {
     if (typeof NATIVE_RECOMMENDATIONS === 'undefined') {
       record('S14 reference data loaded', false, 'NATIVE_RECOMMENDATIONS global is missing');
       return;
     }
     record('S14 reference data loaded', NATIVE_RECOMMENDATIONS.length > 0, 'entries=' + NATIVE_RECOMMENDATIONS.length);
+    const MAP = (typeof NATIVE_SUMMARY_MAP !== 'undefined') ? NATIVE_SUMMARY_MAP : null;
+    record('S14 summary mapping loaded',
+      !!MAP && Array.isArray(MAP.iOS) && MAP.iOS.length > 0 && Array.isArray(MAP.Android) && MAP.Android.length > 0,
+      MAP ? ('iOS=' + MAP.iOS.length + ' Android=' + MAP.Android.length) : 'NATIVE_SUMMARY_MAP missing');
+    if (!MAP) return;
 
     // normRec tolerates CSV doubled-quote escaping ("" == ") so a ticket copied
     // with escaped quotes still matches the authoritative reference.
@@ -306,131 +313,125 @@ function runTests() {
       record('normRec keeps distinct text distinct', normRec('foo "bar"') !== normRec('foo "baz"'), 'sanity: different text stays different');
     }
 
-    const iosE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'iOS' && e.issueDescription);
-    const andE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.issueDescription);
-    const androidContrastE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.checkpoint === '1.4.11.a');
-    const androidOrE = NATIVE_RECOMMENDATIONS.find(e => e.platform === 'Android' && e.checkpoint === '1.3.2.a' && e.issueDescription.startsWith('Screen reader focus falls'));
+    // Resolve a mapping entry's authoritative recommendation (the same join the
+    // production code uses: platform + checkpoint + IDL Summary → recommendation).
+    const recFor = (platform, m) => {
+      const cp = normCheckpoint(m.checkpoint);
+      const e = NATIVE_RECOMMENDATIONS.find(x => x.platform === platform && normCheckpoint(x.checkpoint) === cp && normDesc(x.issueDescription) === normDesc(m.idlSummary));
+      return e ? e.recommendation : null;
+    };
+    const pickEntry = (platform, pred) => {
+      for (const m of MAP[platform]) {
+        const rec = recFor(platform, m);
+        if (!rec) continue;
+        if (pred && !pred(m, rec)) continue;
+        return { checkpoint: m.checkpoint, auditorSummary: m.auditorSummary, idlSummary: m.idlSummary, recommendation: rec };
+      }
+      return null;
+    };
 
-    // Build a native issue: platformLine sets iOS/Android, Summary carries the
-    // Excel Issue Description, and the Remediation Recommendation section holds
-    // the recommendation text under test.
-    function nrRow(platformLine, entry, remediation, summaryExtra) {
+    // Build a native issue whose Summary carries the Auditor Summary (the real
+    // audit shape: "<Auditor Summary> - <page> (<element>)").
+    function nrRow(platformLine, entry, remediation, summaryOverride) {
       const s = nativeSections();
-      const dev = platformLine.indexOf('Android') >= 0 ? 'Pixel Tablet' : 'iPhone 15';
-      const osl = platformLine.indexOf('Android') >= 0 ? 'Android 13' : 'iOS 17';
-      const at  = platformLine.indexOf('Android') >= 0 ? 'TalkBack' : 'VoiceOver';
-      s['Context'] = `Platform: ${platformLine}\nOperating System: ${osl}\nDevice Model: ${dev}\nTest Method: ${at}`;
+      const isAnd = platformLine.indexOf('Android') >= 0;
+      s['Context'] = `Platform: ${platformLine}\nOperating System: ${isAnd ? 'Android 13' : 'iOS 17'}\nDevice Model: ${isAnd ? 'Pixel Tablet' : 'iPhone 15'}\nTest Method: ${isAnd ? 'TalkBack' : 'VoiceOver'}`;
       s['Remediation Recommendation'] = remediation;
-      const summary = entry.issueDescription + (summaryExtra || ' - Home page (element)');
+      const summary = summaryOverride || (entry.auditorSummary + ' - Home page (element)');
       return row({ Checkpoint: entry.checkpoint, Summary: summary, Method: 'Manual', Description: serialize(s) });
     }
     const IOS = 'Native iPhone Mobile App', AND = 'Native Android Tablet App';
+    const iosE = pickEntry('iOS');
+    const andE = pickEntry('Android');
+    record('S14 picked iOS + Android fixtures', !!iosE && !!andE, JSON.stringify({ ios: !!iosE, and: !!andE }));
+    if (!iosE || !andE) return;
 
-    // iOS — exact recommendation → PASS
+    // iOS — recommendation mapped from the Auditor Summary → PASS
     let rr = runChecks(nrRow(IOS, iosE, iosE.recommendation));
     record('S14 native fixture classified iOS', chk(rr, 'S14') && (chk(rr, 'S14').detail || {}).platform === 'iOS', (chk(rr,'S14')||{}).note);
-    assertStatus('S14 iOS exact recommendation', rr, 'S14', 'pass');
+    assertStatus('S14 iOS exact recommendation (mapped)', rr, 'S14', 'pass');
+    record('S14 detail records mapping matchMode', (chk(rr, 'S14').detail || {}).matchMode === 'mapping', JSON.stringify((chk(rr, 'S14').detail || {}).matchMode));
+    record('S14 detail records the Auditor Summary', (chk(rr, 'S14').detail || {}).auditorSummary === iosE.auditorSummary, JSON.stringify((chk(rr, 'S14').detail || {}).auditorSummary));
 
-    // iOS — authoritative recommendation + an appended per-issue note → PASS
-    // (the field may START WITH the reference; trailing additions are allowed).
+    // Trailing per-issue note → PASS (the field may START WITH the reference).
     rr = runChecks(nrRow(IOS, iosE, iosE.recommendation + '\n\nNote: This is applicable to the following screens\n- Inbox\n- Settings'));
     assertStatus('S14 iOS recommendation + trailing note (prefix match)', rr, 'S14', 'pass');
 
-    // iOS — a LEADING addition before the reference → still FAIL (must start with it)
+    // Leading addition before the reference → FAIL (must start with it).
     rr = runChecks(nrRow(IOS, iosE, 'Note: see below.\n\n' + iosE.recommendation));
     assertStatus('S14 iOS leading text before reference', rr, 'S14', 'fail');
 
-    // Dropping a leading structural header line (e.g. "HOW TO FIX: Swift:") still
-    // matches — header labels are ignored on both sides.
+    // Dropping a leading structural header line (e.g. "HOW TO FIX: Swift:") → PASS.
     (function () {
       const noHeader = iosE.recommendation.replace(/^HOW TO FIX[^\n]*:\r?\n/i, '');
-      if (noHeader !== iosE.recommendation) {
-        const rH = runChecks(nrRow(IOS, iosE, noHeader));
-        assertStatus('S14 iOS recommendation with leading header dropped', rH, 'S14', 'pass');
-      }
+      if (noHeader !== iosE.recommendation) assertStatus('S14 iOS leading header dropped', runChecks(nrRow(IOS, iosE, noHeader)), 'S14', 'pass');
     })();
 
-    // iOS — a substantive change WITHIN the recommendation → FAIL (a mid-text edit
-    // breaks the prefix; only trailing additions are tolerated).
+    // Mid-text edit → FAIL.
     (function () {
       const mid = Math.floor(iosE.recommendation.length / 2);
-      const modified = iosE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + iosE.recommendation.slice(mid);
-      rr = runChecks(nrRow(IOS, iosE, modified));
-      assertStatus('S14 iOS modified recommendation (mid-text)', rr, 'S14', 'fail');
+      assertStatus('S14 iOS modified recommendation (mid-text)', runChecks(nrRow(IOS, iosE, iosE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + iosE.recommendation.slice(mid))), 'S14', 'fail');
     })();
 
-    // iOS — Android recommendation pasted in → FAIL
-    rr = runChecks(nrRow(IOS, iosE, andE.recommendation));
-    assertStatus('S14 iOS with Android recommendation', rr, 'S14', 'fail');
+    // iOS issue with an Android recommendation pasted in → FAIL.
+    assertStatus('S14 iOS with Android recommendation', runChecks(nrRow(IOS, iosE, andE.recommendation)), 'S14', 'fail');
 
-    // iOS — missing recommendation → FAIL
+    // Missing recommendation → NA (S12 reports the missing required field).
     (function () {
       const s = nativeSections();
       s['Context'] = `Platform: ${IOS}\nOperating System: iOS 17\nDevice Model: iPhone 15\nTest Method: VoiceOver`;
       delete s['Remediation Recommendation'];
-      const rMiss = runChecks(row({ Checkpoint: iosE.checkpoint, Summary: iosE.issueDescription + ' - Home page (x)', Method: 'Manual', Description: serialize(s) }));
+      const rMiss = runChecks(row({ Checkpoint: iosE.checkpoint, Summary: iosE.auditorSummary + ' - Home page (x)', Method: 'Manual', Description: serialize(s) }));
       assertStatus('S14 skipped when recommendation is missing', rMiss, 'S14', 'na');
       record('S14 missing recommendation defers to S12', (chk(rMiss, 'S14').note || '').includes('S12'), chk(rMiss, 'S14').note);
     })();
 
-    // Android — exact → PASS ; modified → FAIL ; iOS rec → FAIL
+    // Android — exact → PASS ; iOS rec → FAIL
     rr = runChecks(nrRow(AND, andE, andE.recommendation));
     record('S14 native fixture classified Android', (chk(rr, 'S14').detail || {}).platform === 'Android', (chk(rr,'S14')||{}).note);
-    assertStatus('S14 Android exact recommendation', rr, 'S14', 'pass');
+    assertStatus('S14 Android exact recommendation (mapped)', rr, 'S14', 'pass');
+    assertStatus('S14 Android with iOS recommendation', runChecks(nrRow(AND, andE, iosE.recommendation)), 'S14', 'fail');
 
-    // Android real-data tolerance: the audit recommendation omits the word
-    // "color" from "background color" but otherwise matches the reference.
-    const androidMissingWord = androidContrastE.recommendation.replace('background color', 'background');
-    rr = runChecks(nrRow(AND, androidContrastE, androidMissingWord));
-    assertStatus('S14 Android recommendation with one omitted word', rr, 'S14', 'pass');
-
-    const androidMissingThreeWords = androidContrastE.recommendation.replace('background color', 'background').replace('either the inner or outer', 'either inner or outer');
-    rr = runChecks(nrRow(AND, androidContrastE, androidMissingThreeWords));
-    assertStatus('S14 Android recommendation with two omitted words', rr, 'S14', 'pass');
-
-    const androidMissingFourWords = androidMissingThreeWords.replace('user interface component', 'component');
-    rr = runChecks(nrRow(AND, androidContrastE, androidMissingFourWords));
-    assertStatus('S14 Android recommendation with more than two omitted words', rr, 'S14', 'fail');
-
-    const alternatives = androidOrE.recommendation.split(/\n\s*OR\s*\n/i);
-    rr = runChecks(nrRow(AND, androidOrE, alternatives[1]));
-    assertStatus('S14 accepts second OR recommendation alternative', rr, 'S14', 'pass');
-    rr = runChecks(nrRow(AND, androidOrE, alternatives.join('\n\nOR\n\n')));
-    assertStatus('S14 accepts both OR recommendation alternatives', rr, 'S14', 'pass');
-
+    // Omitted-words tolerance (real audit data): up to two dropped words still PASS.
     (function () {
-      const mid = Math.floor(andE.recommendation.length / 2);
-      const modified = andE.recommendation.slice(0, mid) + ' XX-EDITED-XX ' + andE.recommendation.slice(mid);
-      rr = runChecks(nrRow(AND, andE, modified));
-      assertStatus('S14 Android modified recommendation (mid-text)', rr, 'S14', 'fail');
+      const c = pickEntry('Android', (m, rec) => /background color/i.test(rec) && /either the inner or outer/i.test(rec));
+      record('S14 omitted-words fixture available', !!c, c ? c.checkpoint : 'no Android rec with the expected phrases');
+      if (!c) return;
+      assertStatus('S14 Android one omitted word', runChecks(nrRow(AND, c, c.recommendation.replace('background color', 'background'))), 'S14', 'pass');
+      const two = c.recommendation.replace('background color', 'background').replace('either the inner or outer', 'either inner or outer');
+      assertStatus('S14 Android two omitted words', runChecks(nrRow(AND, c, two)), 'S14', 'pass');
+      const four = two.replace('user interface component', 'component');
+      if (four !== two) assertStatus('S14 Android >2 omitted words', runChecks(nrRow(AND, c, four)), 'S14', 'fail');
     })();
 
-    rr = runChecks(nrRow(AND, andE, iosE.recommendation));
-    assertStatus('S14 Android with iOS recommendation', rr, 'S14', 'fail');
+    // OR alternatives: either alternative (or both) → PASS.
+    (function () {
+      const o = pickEntry('Android', (m, rec) => /\n\s*OR\s*\n/i.test(rec));
+      record('S14 OR-alternative fixture available', !!o, o ? o.checkpoint : 'no Android rec with an OR');
+      if (!o) return;
+      const alts = o.recommendation.split(/\n\s*OR\s*\n/i);
+      assertStatus('S14 accepts second OR alternative', runChecks(nrRow(AND, o, alts[1])), 'S14', 'pass');
+      assertStatus('S14 accepts both OR alternatives', runChecks(nrRow(AND, o, alts.join('\n\nOR\n\n'))), 'S14', 'pass');
+    })();
 
-    // Checkpoint not found in the correct tab → ERROR (reported as fail)
-    rr = runChecks(nrRow(IOS, { checkpoint: '9.9.9.z', issueDescription: iosE.issueDescription }, iosE.recommendation));
-    assertStatus('S14 checkpoint not found → ERROR', rr, 'S14', 'fail');
-    record('S14 checkpoint-not-found says ERROR', (chk(rr, 'S14').note || '').startsWith('ERROR'), chk(rr, 'S14').note);
+    // RULE / BACKGROUND must not be present → FAIL (enforced independently of the mapping).
+    rr = runChecks(nrRow(IOS, iosE, 'RULE:\nSomething.\n\n' + iosE.recommendation));
+    assertStatus('S14 recommendation contains RULE → FAIL', rr, 'S14', 'fail');
+    record('S14 RULE message', (chk(rr, 'S14').note || '').includes('RULE'), chk(rr, 'S14').note);
+    assertStatus('S14 recommendation contains BACKGROUND → FAIL', runChecks(nrRow(IOS, iosE, iosE.recommendation + '\n\nBACKGROUND:\nSome background.')), 'S14', 'fail');
 
-    // Formatting normalisation: leading/trailing whitespace → PASS
-    rr = runChecks(nrRow(IOS, iosE, '   \n' + iosE.recommendation + '   \n\n'));
-    assertStatus('S14 iOS whitespace-only difference', rr, 'S14', 'pass');
+    // Formatting normalisation: whitespace + CRLF/blank lines → PASS.
+    assertStatus('S14 iOS whitespace-only difference', runChecks(nrRow(IOS, iosE, '   \n' + iosE.recommendation + '   \n\n')), 'S14', 'pass');
+    assertStatus('S14 iOS line-ending/blank-line difference', runChecks(nrRow(IOS, iosE, iosE.recommendation.replace(/\n/g, '\r\n').replace(/\r\n/g, '\r\n\r\n'))), 'S14', 'pass');
 
-    // Formatting normalisation: CRLF line endings + collapsed blank lines → PASS
-    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation.replace(/\n/g, '\r\n').replace(/\r\n/g, '\r\n\r\n')));
-    assertStatus('S14 iOS line-ending/blank-line difference', rr, 'S14', 'pass');
-
-    // Checkpoint format tolerance: "1.1.1.a" vs "1.1.1 a" still resolves the row
+    // Checkpoint format tolerance: "x.y.z a" and a full WCAG label still map.
     (function () {
       const spaced = iosE.checkpoint.replace(/\.([a-z])$/i, ' $1');
-      if (spaced !== iosE.checkpoint) {
-        const rf = runChecks(nrRow(IOS, { checkpoint: spaced, issueDescription: iosE.issueDescription }, iosE.recommendation));
-        assertStatus('S14 checkpoint format-tolerant match', rf, 'S14', 'pass');
-      }
+      if (spaced !== iosE.checkpoint) assertStatus('S14 checkpoint format-tolerant', runChecks(nrRow(IOS, { checkpoint: spaced, auditorSummary: iosE.auditorSummary }, iosE.recommendation)), 'S14', 'pass');
+      assertStatus('S14 checkpoint as WCAG label with parenthesised id', runChecks(nrRow(IOS, { checkpoint: 'Name, Role, Value (' + iosE.checkpoint + ')', auditorSummary: iosE.auditorSummary }, iosE.recommendation)), 'S14', 'pass');
     })();
 
-    // normCheckpoint: extract the id from a full WCAG label (real audit format)
+    // normCheckpoint: extract the id from a full WCAG label (real audit format).
     if (typeof normCheckpoint === 'function') {
       record('normCheckpoint parenthesised id', normCheckpoint('Name, Role, Value (4.1.2.a)') === '4.1.2a', normCheckpoint('Name, Role, Value (4.1.2.a)'));
       record('normCheckpoint bare id', normCheckpoint('4.1.2.a') === '4.1.2a', normCheckpoint('4.1.2.a'));
@@ -438,49 +439,27 @@ function runTests() {
       record('normCheckpoint N/A trailer', normCheckpoint('1.1.1.e - N/A') === '1.1.1e', normCheckpoint('1.1.1.e - N/A'));
     }
 
-    // Checkpoint carried as a full WCAG label with the id in parentheses (the real
-    // audit format that produced the reported ERROR) must still resolve the row.
+    // No mapping for the Auditor Summary → report for MANUAL verification (no guess).
     (function () {
-      const s = nativeSections();
-      s['Context'] = `Platform: ${IOS}\nOperating System: iOS 17\nDevice Model: iPhone 15\nTest Method: VoiceOver`;
-      s['Remediation Recommendation'] = iosE.recommendation;
-      const wrapped = 'Name, Role, Value (' + iosE.checkpoint + ')';
-      const rw = runChecks(row({ Checkpoint: wrapped, Summary: iosE.issueDescription + ' - Home page (x)', Method: 'Manual', Description: serialize(s) }));
-      assertStatus('S14 checkpoint as WCAG label with parenthesised id', rw, 'S14', 'pass');
+      const rNo = runChecks(nrRow(IOS, { checkpoint: iosE.checkpoint, auditorSummary: 'An auditor summary that does not exist in the mapping at all' }, iosE.recommendation));
+      assertStatus('S14 unmapped Auditor Summary → fail', rNo, 'S14', 'fail');
+      record('S14 unmapped reports MANUAL verification', (chk(rNo, 'S14').note || '').includes('MANUAL'), chk(rNo, 'S14').note);
     })();
 
-    // RULE / BACKGROUND must not be present in the recommendation → FAIL
-    rr = runChecks(nrRow(IOS, iosE, 'RULE:\nSomething.\n\n' + iosE.recommendation));
-    assertStatus('S14 recommendation contains RULE → FAIL', rr, 'S14', 'fail');
-    record('S14 RULE message', (chk(rr, 'S14').note || '').includes('RULE'), chk(rr, 'S14').note);
-
-    rr = runChecks(nrRow(IOS, iosE, iosE.recommendation + '\n\nBACKGROUND:\nSome background.'));
-    assertStatus('S14 recommendation contains BACKGROUND → FAIL', rr, 'S14', 'fail');
-
-    // Real-data shape: the Summary carries short text + page + element and does NOT
-    // contain the verbose Excel Issue Description, so the exact row can't be pinned.
-    // Any authoritative recommendation for the checkpoint+platform is then accepted
-    // verbatim (PASS); a rewritten recommendation is rejected (FAIL).
+    // The iOS mapping must NOT be used for Android issues: an Auditor Summary that
+    // exists only in the iOS tab is unmapped on Android → MANUAL verification.
     (function () {
-      const label = 'WCAG label (' + andE.checkpoint + ')';
-      const unrelated = 'Short issue phrasing here - Settings page (some element)';
-      const sOk = nativeSections();
-      sOk['Context'] = `Platform: ${AND}\nOperating System: Android 13\nDevice Model: Pixel Tablet\nTest Method: TalkBack`;
-      sOk['Remediation Recommendation'] = andE.recommendation;
-      const rOk = runChecks(row({ Checkpoint: label, Summary: unrelated, Method: 'Manual', Description: serialize(sOk) }));
-      assertStatus('S14 any-row fallback accepts verbatim rec', rOk, 'S14', 'pass');
-      record('S14 fallback uses any-row match mode', (chk(rOk, 'S14').detail || {}).matchMode === 'any', JSON.stringify((chk(rOk, 'S14').detail || {}).matchMode));
-
-      const sBad = nativeSections();
-      sBad['Context'] = `Platform: ${AND}\nOperating System: Android 13\nDevice Model: Pixel Tablet\nTest Method: TalkBack`;
-      sBad['Remediation Recommendation'] = 'A completely rewritten recommendation not taken from the reference sheet.';
-      const rBad = runChecks(row({ Checkpoint: label, Summary: unrelated, Method: 'Manual', Description: serialize(sBad) }));
-      assertStatus('S14 any-row fallback rejects rewritten rec', rBad, 'S14', 'fail');
+      const andAud = new Set(MAP.Android.map(m => normDesc(m.auditorSummary)));
+      const iosOnly = pickEntry('iOS', (m) => !andAud.has(normDesc(m.auditorSummary)));
+      record('S14 iOS-only fixture available', !!iosOnly, iosOnly ? iosOnly.auditorSummary.slice(0, 40) : 'none');
+      if (!iosOnly) return;
+      const rX = runChecks(nrRow(AND, iosOnly, iosOnly.recommendation));
+      assertStatus('S14 iOS-only summary is unmapped on Android', rX, 'S14', 'fail');
+      record('S14 no cross-tab mapping (MANUAL)', (chk(rX, 'S14').note || '').includes('MANUAL'), chk(rX, 'S14').note);
     })();
 
     // Web issue → NA (does not apply)
-    rr = runChecks(row({ Description: serialize(fullSections()) }));
-    assertStatus('S14 web issue is NA', rr, 'S14', 'na');
+    assertStatus('S14 web issue is NA', runChecks(row({ Description: serialize(fullSections()) })), 'S14', 'na');
   })();
 
   // ── Checkpoint-owned Context / Test Method validation ────────────
@@ -582,9 +561,24 @@ function runTests() {
     assertStatus('Native Android Color rejects AT', { checks: [naS5('1.4.3', 'Android using Deque color contrast Analyser', 'TalkBack')] }, 'S5', 'fail');
     assertStatus('Native Android Visual valid', { checks: [naS5('2.4.2', 'Android', '')] }, 'S5', 'pass');
     assertStatus('Native Android Text Spacing unsupported', { checks: [naS5('1.4.12', 'Android', '')] }, 'S5', 'fail');
-    record('Native Android Text Spacing unsupported message', naS5('1.4.12', 'Android', '').note.includes('No Test Method rule is currently defined for Text Spacing checkpoints on Native Android'), naS5('1.4.12', 'Android', '').note);
+    record('Native Android Text Spacing unsupported message', naS5('1.4.12', 'Android', '').note.includes('1.4.12 is not applicable in Native Android. Please check manually.'), naS5('1.4.12', 'Android', '').note);
     assertStatus('Native Android Keyboard unsupported', { checks: [naS5('2.4.7', 'Android', '')] }, 'S5', 'fail');
-    record('Native Android Keyboard unsupported message', naS5('2.4.7', 'Android', '').note.includes('No Test Method rule is currently defined for Keyboard checkpoints on Native Android'), naS5('2.4.7', 'Android', '').note);
+    record('Native Android Keyboard unsupported message', naS5('2.4.7', 'Android', '').note.includes('2.4.7 is not applicable in Native Android. Please check manually.'), naS5('2.4.7', 'Android', '').note);
+
+    // Platform applicability from the matrix: no Test Method rule for a checkpoint +
+    // platform → the "[Checkpoint] is not applicable in [Platform]. Please check
+    // manually." error, with no inferred/borrowed/generic Test Method. Example from
+    // the spec: a Keyboard checkpoint on iOS Mobile Web (that cell is null; 2.1.1 is
+    // excluded because it is a Screen Reader checkpoint on iOS, so use 2.4.7).
+    const imwS5 = (cp, tm, at) => chk(runChecks(mrow({ Checkpoint: cp, Description: webCtx('iOS Mobile Web', tm, at) })), 'S5');
+    assertStatus('iOS Mobile Web Keyboard unsupported', { checks: [imwS5('2.4.7', 'Safari on iPhone using keyboard', '')] }, 'S5', 'fail');
+    record('iOS Mobile Web Keyboard not-applicable message',
+      imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note.includes('2.4.7 is not applicable in iOS Mobile Web. Please check manually.'),
+      imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note);
+    // The not-applicable error must NOT invent or borrow a Test Method from another platform.
+    record('iOS Mobile Web Keyboard: no inferred Test Method',
+      !/Expected:/.test(imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note),
+      imwS5('2.4.7', 'Safari on iPhone using keyboard', '').note);
     // Existing CSV platform value "Native Android Tablet App" also maps to Native Android.
     assertStatus('Native Android via "Native Android Tablet App" value', { checks: [chk(runChecks(mrow({ Checkpoint: '1.3.1', Description: nativeCtx('Native Android Tablet App', 'Android using Talkback screen reader', 'TalkBack') })), 'S5')] }, 'S5', 'pass');
 
@@ -638,6 +632,26 @@ function runTests() {
     assertStatus('Automation with AT only in CSV column passes', autoRow('Chrome on Windows using axe DevTools Chrome browser extension', { 'Assistive technology': 'NVDA' }), 'S5', 'pass');
     // "Automation" spelling of the Method column is honoured too
     assertStatus('Automation ("Automation" spelling) wrong Test Method fails', autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Automation' }), 'S5', 'fail');
+
+    // ── Automation 4.1.2 must NEVER require Assistive Technology ──────
+    // The issue type is determined first: an axe DevTools Test Method identifies an
+    // Automation issue even when the Method column is blank or mislabelled, so a
+    // 4.1.2 Automation issue with an empty Assistive Technology value must PASS and
+    // must not be told to add AT (regression: it was validated as a Screen-Reader
+    // checkpoint and wrongly demanded AT).
+    const AXE_TM = 'Chrome on Windows using axe DevTools Chrome browser extension';
+    ['', 'Manual', 'automated (axe)', 'Automated'].forEach(m => {
+      const s5 = chk(autoRow(AXE_TM, { Method: m }), 'S5');
+      assertStatus(`Automation 4.1.2 passes with empty AT (Method="${m}")`, { checks: [s5] }, 'S5', 'pass');
+      record(`Automation 4.1.2 does not require AT (Method="${m}")`,
+        !((s5.note || '').includes('Assistive Technology is required')), s5.note);
+    });
+    // A genuine Screen-Reader 4.1.2 issue (NVDA Test Method, not automation) still
+    // requires AT when it is missing — the fix must not weaken that rule.
+    record('Manual 4.1.2 Screen Reader still requires AT when missing',
+      (chk(autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Manual' }), 'S5').note || '')
+        .includes('Assistive Technology is required'),
+      chk(autoRow('Chrome on Windows using NVDA Assistive Technology', { Method: 'Manual' }), 'S5').note);
 
     // Case-insensitive Test Method: "Chrome on Windows" (capital W) == matrix "Chrome on windows"
     assertStatus('Visual Web accepts capitalised "Chrome on Windows"', runChecks(mrow({ Checkpoint: '2.4.2', Description: webCtx('Web', 'Chrome on Windows', '') })), 'S5', 'pass');
@@ -805,6 +819,65 @@ function runTests() {
     record('non-3.3.2: no 3.3.2 Step message in S6', !((chk(r, 'S6').note || '').includes('Step 1 should not start with')), chk(r, 'S6').note);
   })();
 
+  // ── S6 — Issue Type from checkpoint-classification.md + Step 1 ────
+  // The Issue Type is taken from the checkpoint classification (never inferred from
+  // the Test Method), and a Screen Reader checkpoint's Step 1 must turn the screen
+  // reader on first — "Open the above-mentioned URL." is wrong there.
+  (function () {
+    const ctxLine = (plat, tm, at) => `Platform: ${plat}\nOperating System: Windows 11\nBrowser: Chrome 120\n${at ? `Assistive Technology: ${at}\n` : ''}Test Method: ${tm}`;
+    const s6row = (cp, method, ctx, steps) => {
+      const s = fullSections();
+      s['Context'] = ctx;
+      s['Steps to reproduce'] = steps;
+      return runChecks(row({ Checkpoint: cp, Method: method, Summary: 'Issue - Home page (el)', Description: serialize(s) }));
+    };
+    const NVDA = 'Chrome on Windows using NVDA Assistive Technology';
+    const AXE = 'Chrome on Windows using axe DevTools Chrome browser extension';
+    const OPEN = '1. Open the above-mentioned URL.\n2. Navigate to the element.\n3. Observe.';
+    const SR1 = '1. Turn on the screen reader.\n2. Navigate to the element.\n3. Observe.';
+
+    // Manual Screen Reader checkpoint: "Open the URL" Step 1 is WRONG (the reported bug).
+    const srOpen = s6row('4.1.2', 'Manual', ctxLine('Web', NVDA, 'NVDA'), OPEN);
+    assertStatus('S6 SR checkpoint with "Open the URL" Step 1 fails', srOpen, 'S6', 'fail');
+    record('S6 SR checkpoint asks for the "Turn on the screen reader." Step 1',
+      (chk(srOpen, 'S6').note || '').includes('Turn on the screen reader'), chk(srOpen, 'S6').note);
+    assertStatus('S6 SR checkpoint with screen-reader Step 1 passes',
+      s6row('4.1.2', 'Manual', ctxLine('Web', NVDA, 'NVDA'), SR1), 'S6', 'pass');
+
+    // Automation Screen Reader checkpoint: open-URL Step 1 is correct (no SR step).
+    assertStatus('S6 automation SR checkpoint: open-URL Step 1 passes',
+      s6row('4.1.2', 'Automated', ctxLine('Web', AXE, ''), '1. Open the above-mentioned URL.\n2. Press F12 to open the browser Inspect panel.\n3. Observe.'), 'S6', 'pass');
+
+    // Non-SR checkpoint (Keyboard): Step 1 must NOT turn on a screen reader.
+    assertStatus('S6 Keyboard checkpoint: open-URL Step 1 passes',
+      s6row('2.4.7', 'Manual', ctxLine('Web', 'Chrome on windows using keyboard', ''), OPEN), 'S6', 'pass');
+    assertStatus('S6 Keyboard checkpoint: screen-reader Step 1 fails',
+      s6row('2.4.7', 'Manual', ctxLine('Web', 'Chrome on windows using keyboard', ''), SR1), 'S6', 'fail');
+
+    // No Test Method rule for the checkpoint + platform → not applicable, and no
+    // invented screen-reader step (Keyboard on iOS Mobile Web).
+    const naR = s6row('2.4.7', 'Manual', ctxLine('iOS Mobile Web', 'Safari on iPhone using keyboard', ''), OPEN);
+    assertStatus('S6 Keyboard on iOS Mobile Web → not applicable (fail)', naR, 'S6', 'fail');
+    record('S6 not-applicable message',
+      (chk(naR, 'S6').note || '').includes('2.4.7 is not applicable in iOS Mobile Web. Please check manually.'), chk(naR, 'S6').note);
+    record('S6 not-applicable does not invent a screen-reader step',
+      !((chk(naR, 'S6').note || '').includes('Turn on the screen reader')), chk(naR, 'S6').note);
+  })();
+
+  // ── S9 & S12 both report a MISSING Screen Name (same field) ──────
+  (function () {
+    const s = fullSections();
+    delete s['Screen Name'];
+    const r = runChecks(row({ Checkpoint: '4.1.2', Method: 'Automated', Summary: 'Button missing name - Home page (btn)', Description: serialize(s) }));
+    assertStatus('S9 flags a missing Screen Name', r, 'S9', 'fail');
+    record('S9 clearly says the Screen Name is missing', (chk(r, 'S9').note || '').toLowerCase().includes('screen name is missing'), chk(r, 'S9').note);
+    assertStatus('S12 flags a missing Screen Name', r, 'S12', 'fail');
+    record('S12 clearly says the Screen Name is missing', (chk(r, 'S12').note || '').includes('Screen Name is missing'), chk(r, 'S12').note);
+    // Present Screen Name → S12 no longer reports it missing.
+    const r2 = runChecks(row({ Checkpoint: '4.1.2', Method: 'Automated', Description: serialize(fullSections()) }));
+    record('S12 does not report Screen Name missing when present', !((chk(r2, 'S12').note || '').includes('Screen Name is missing')), chk(r2, 'S12').note);
+  })();
+
   // ── Checkpoint classification matches the authoritative list ─────
   // Guards checkpoint-classification.md against CHECKPOINT_TYPES / classifyCheckpoint.
   (function () {
@@ -815,6 +888,16 @@ function runTests() {
       'Text Spacing': ['1.4.12'],
       'Keyboard': ['2.1.1', '2.1.2', '2.1.4', '2.4.1', '2.4.3', '2.4.7', '2.4.11', '3.2.1', '3.2.2'],
     };
+    // Embedded fallback in checks.js still mirrors the authoritative list.
+    if (typeof DEFAULT_CHECKPOINT_TYPES !== 'undefined') {
+      Object.keys(AUTHORITATIVE).forEach(type => {
+        record(`DEFAULT_CHECKPOINT_TYPES matches doc: ${type}`,
+          (DEFAULT_CHECKPOINT_TYPES[type] || []).join(',') === AUTHORITATIVE[type].join(','),
+          `code=${(DEFAULT_CHECKPOINT_TYPES[type] || []).join(',')}`);
+      });
+    }
+    // The live map S5 uses (embedded fallback in the browser test; the real
+    // checkpoint-classification.md file when run under Node) matches the list.
     if (typeof CHECKPOINT_TYPES !== 'undefined') {
       Object.keys(AUTHORITATIVE).forEach(type => {
         record(`CHECKPOINT_TYPES matches doc: ${type}`,
@@ -829,6 +912,60 @@ function runTests() {
         record(`classify ${cp} → ${type}`, classifyCheckpoint(cp) === type, `got ${classifyCheckpoint(cp)}`);
       });
     });
+
+    // ── The .md file is the source of truth: parser + loader drive S5 ──
+    // Prove that classifyCheckpoint (and therefore S5) follows whatever
+    // checkpoint-classification.md says, not a hard-coded table.
+    if (typeof parseCheckpointClassification === 'function' && typeof loadCheckpointClassification === 'function') {
+      const mdFrom = m => Object.keys(m).map(t => `## ${t}\n\n` + m[t].map(id => `- ${id}`).join('\n')).join('\n\n');
+
+      // Parser reads the documented "## Type" / "- id" shape (and ignores the
+      // level-1 title + a Notes section with prose bullets).
+      const sampleMd = '# Title\n\n' + mdFrom(AUTHORITATIVE) +
+        '\n\n## Notes\n\n- **3.3.2 is split** into things that are not ids.\n';
+      const parsed = parseCheckpointClassification(sampleMd);
+      Object.keys(AUTHORITATIVE).forEach(type => {
+        record(`parse checkpoint-classification.md: ${type}`,
+          !!parsed && (parsed[type] || []).join(',') === AUTHORITATIVE[type].join(','),
+          `got ${parsed && (parsed[type] || []).join(',')}`);
+      });
+
+      // Loading the canonical md yields the file source and the same classification.
+      record('load canonical md → file source',
+        loadCheckpointClassification(mdFrom(AUTHORITATIVE)) === 'checkpoint-classification.md',
+        `source ${typeof getCheckpointClassificationSource === 'function' ? getCheckpointClassificationSource() : '(n/a)'}`);
+      record('after load: 1.4.10 is Visual', classifyCheckpoint('1.4.10') === 'Visual', classifyCheckpoint('1.4.10'));
+
+      // Reclassification flows through: move 1.4.10 from Visual → Color in the md
+      // and S5's classifier must follow it (was Visual, now Color).
+      const reclassified = JSON.parse(JSON.stringify(AUTHORITATIVE));
+      reclassified['Visual'] = reclassified['Visual'].filter(id => id !== '1.4.10');
+      reclassified['Color'] = reclassified['Color'].concat('1.4.10');
+      loadCheckpointClassification(mdFrom(reclassified));
+      record('reclassify in md: 1.4.10 → Color is honoured', classifyCheckpoint('1.4.10') === 'Color', classifyCheckpoint('1.4.10'));
+
+      // Verify the reclassification reaches S5's actual output: a 1.4.10 Web issue
+      // is now a Color checkpoint, so the Color Test Method is required.
+      (function () {
+        const s = fullSections();
+        s['Context'] = 'Platform: Web\nOperating System: Windows 11\nBrowser: Chrome 120\nTest Method: Chrome on windows';
+        const rr = runChecks(row({ Checkpoint: '1.4.10', Method: 'Manual', Summary: 'Low contrast text - Home page (label)', Description: serialize(s) }));
+        record('reclassify in md reaches S5', (chk(rr, 'S5').note || '').includes('Color'), chk(rr, 'S5').note);
+      })();
+
+      // Malformed md (a whole type heading missing) is rejected → embedded fallback
+      // stays in effect, so S5 never loses a checkpoint type to a bad file.
+      const partial = JSON.parse(JSON.stringify(AUTHORITATIVE));
+      delete partial['Keyboard'];
+      record('malformed md (missing type) keeps fallback',
+        loadCheckpointClassification(mdFrom(partial)) === 'default',
+        'expected default source for a structurally incomplete file');
+      record('empty md keeps fallback', loadCheckpointClassification('') === 'default', 'empty text should not replace the map');
+
+      // Restore the canonical classification for the remaining tests.
+      loadCheckpointClassification(mdFrom(AUTHORITATIVE));
+      record('restore canonical: 1.4.10 is Visual again', classifyCheckpoint('1.4.10') === 'Visual', classifyCheckpoint('1.4.10'));
+    }
   })();
 
   // ── Regression — every check still produces a result ─────────────

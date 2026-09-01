@@ -1,10 +1,16 @@
 # Checkpoint → Type Classification
 
 Authoritative mapping of WCAG Success Criteria to the checkpoint **type** used by
-the sanity checker's Context / Test-Method validation (check **S5**). This list is
-the source of truth; it is mirrored verbatim by the `CHECKPOINT_TYPES` object in
-[`checks.js`](checks.js) and enforced by `classifyCheckpoint()`. A guard test in
-`tests.js` asserts the code still matches this document.
+the sanity checker's Context / Test-Method validation (check **S5**). This file is
+the source of truth and is **read at runtime**: [`checks.js`](checks.js) parses the
+`## <Type>` sections and `- <id>` bullets below into the classification that
+`classifyCheckpoint()` (and therefore S5) uses. Node reads it from disk on load;
+the browser fetches it at startup (see [`script.js`](script.js)). An embedded copy
+in `checks.js` (`DEFAULT_CHECKPOINT_TYPES`) is used only as a fallback when this
+file cannot be read (e.g. opened from `file://`), and a guard test in `tests.js`
+asserts that fallback — and this document — still match. Reclassifying a checkpoint
+here changes S5's validation automatically; keep the format below (a `## Type`
+heading followed by one bare `- <id>` per line) so the parser can read it.
 
 The type selects which row of the Test-Method matrix applies (see
 [`checks.js`](checks.js) `TEST_METHOD_MATRIX`) and whether Assistive Technology is
@@ -93,8 +99,11 @@ required in the Context (Screen Reader → required; every other type → not al
   the checkpoint label reads "…action cannot be performed with a screen reader
   turned on".
 - **Automation** is not a checkpoint type: an automation issue is identified first
-  from the Method column and validated against the axe DevTools Test Method,
-  regardless of the checkpoint's type.
+  from the Method column (`Automated`/`Automation`) **or from an axe DevTools Test
+  Method**, and validated against the axe DevTools Test Method, regardless of the
+  checkpoint's type. Assistive Technology is never required (and not allowed) for an
+  automation issue — so a 4.1.2 automation issue is not held to the Screen-Reader
+  "AT required" rule and passes with an empty Assistive Technology value.
 - **Unlisted Success Criteria** classify as `null` — S5 does not apply a
   checkpoint-type Test-Method rule to them (other checks still run).
 - Checkpoint ids are matched tolerantly of the full WCAG label form the audits use,

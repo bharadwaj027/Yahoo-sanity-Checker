@@ -436,7 +436,71 @@ function findNativeRecommendation(platformKind, checkpoint, summary) {
   return { status: 'found', rows, pinned: pinNativeRow(rows, summary) };
 }
 
-const CHECKPOINT_TYPES = {
+// The audit Summary is "<Auditor Summary> - <page name> (<element>)". Return its
+// leading Auditor-Summary segment (before the first " - "). This is the value the
+// Native iOS / Native Android mapping tab keys on.
+function nativeAuditorSummary(summary) {
+  return String(summary || '').split(/\s[-–—]\s/)[0];
+}
+
+// Map an audit issue's Auditor Summary back to the Native IDL Summary using the
+// per-platform mapping (NATIVE_SUMMARY_MAP, from native-summary-map.js), then
+// resolve THAT IDL Summary to its authoritative Recommendation in
+// NATIVE_RECOMMENDATIONS. The mapping is the source of truth: only the matching
+// platform tab is consulted, and the Recommendation is never inferred from the
+// checkpoint or a similar issue. Returns:
+//   {status:'found', expected:[{recommendation, idlSummary, auditorSummary, checkpoint}]}
+//   {status:'no-map'|'no-data'} reference not loaded
+//   {status:'no-summary'}       the issue has no usable Summary
+//   {status:'no-mapping', auditorSummary}      no Auditor-Summary match in the tab
+//   {status:'no-recommendation', auditorSummary} mapped, but no Recommendation on file
+// A checkpoint, when present, disambiguates an Auditor Summary shared across
+// checkpoints; an Auditor Summary shared by several IDL Summaries yields several
+// expected Recommendations (a match against any is accepted).
+function findNativeRecommendationByMapping(platformKind, checkpoint, summary) {
+  if (typeof NATIVE_SUMMARY_MAP === 'undefined' || !NATIVE_SUMMARY_MAP || !Array.isArray(NATIVE_SUMMARY_MAP[platformKind])) return { status: 'no-map' };
+  if (typeof NATIVE_RECOMMENDATIONS === 'undefined' || !Array.isArray(NATIVE_RECOMMENDATIONS)) return { status: 'no-data' };
+  const tab = NATIVE_SUMMARY_MAP[platformKind];
+  const aud = normDesc(nativeAuditorSummary(summary));
+  const audFull = normDesc(summary);
+  if (!aud) return { status: 'no-summary' };
+  const cp = normCheckpoint(checkpoint);
+  const cpOk = m => !cp || normCheckpoint(m.checkpoint) === cp;
+  // Prefer the Auditor-Summary segment; fall back to the whole Summary (an issue
+  // whose Summary is only the Auditor Summary, with no " - page" suffix).
+  let matches = tab.filter(m => cpOk(m) && normDesc(m.auditorSummary) === aud);
+  if (!matches.length) matches = tab.filter(m => cpOk(m) && normDesc(m.auditorSummary) === audFull);
+  if (!matches.length) return { status: 'no-mapping', auditorSummary: nativeAuditorSummary(summary).trim() };
+  const expected = [];
+  const seen = new Set();
+  matches.forEach(m => {
+    const mcp = normCheckpoint(m.checkpoint);
+    const idl = normDesc(m.idlSummary);
+    NATIVE_RECOMMENDATIONS.forEach(e => {
+      if (e.platform === platformKind && normCheckpoint(e.checkpoint) === mcp && normDesc(e.issueDescription) === idl) {
+        const key = mcp + ' ' + normRec(e.recommendation);
+        if (seen.has(key)) return;
+        seen.add(key);
+        expected.push({ recommendation: e.recommendation, idlSummary: m.idlSummary, auditorSummary: m.auditorSummary, checkpoint: e.checkpoint });
+      }
+    });
+  });
+  if (!expected.length) return { status: 'no-recommendation', auditorSummary: nativeAuditorSummary(summary).trim() };
+  return { status: 'found', expected };
+}
+
+// Order the checkpoint types are declared in checkpoint-classification.md and
+// tried in classifyCheckpoint (Screen Reader is resolved first, separately).
+const CHECKPOINT_TYPE_ORDER = ['Screen Reader', 'Visual', 'Color', 'Text Spacing', 'Keyboard'];
+
+// Embedded fallback, mirroring checkpoint-classification.md verbatim. The .md
+// file is the SINGLE SOURCE OF TRUTH at runtime (see loadCheckpointClassification
+// below): Node reads it from disk immediately, and the browser fetches it at
+// startup (script.js) before any issue is checked. This copy is used only when
+// the file cannot be read (e.g. opened from file:// with fetch blocked), so S5
+// always has a classification to validate against. The guard test in tests.js
+// asserts this copy — and the committed .md — still match the authoritative list.
+const DEFAULT_CHECKPOINT_TYPES = {
   'Screen Reader': ['1.1.1', '1.3.1', '2.4.4', '2.4.6', '2.5.3', '3.1.1', '3.3.2.b', '4.1.2', '4.1.3'],
   'Visual': ['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.3.3', '1.3.4', '1.3.5', '1.4.2', '1.4.4', '1.4.5', '1.4.10', '1.4.13', '2.2.1', '2.2.2', '2.3.1', '2.4.2', '2.4.5', '2.5.1', '2.5.2', '2.5.4', '2.5.7', '2.5.8', '3.1.2', '3.2.6', '3.3.2.a', '3.3.2.c', '3.3.3', '3.3.4', '3.3.7', '3.3.8'],
   'Color': ['1.4.1', '1.4.3', '1.4.11'],
@@ -444,16 +508,78 @@ const CHECKPOINT_TYPES = {
   'Keyboard': ['2.1.1', '2.1.2', '2.1.4', '2.4.1', '2.4.3', '2.4.7', '2.4.11', '3.2.1', '3.2.2'],
 };
 
+// Live classification map consumed by classifyCheckpoint / resolveCheckpointType
+// (and therefore by S5). Reassigned by loadCheckpointClassification once the
+// checkpoint-classification.md text is available; seeded with the fallback so the
+// tool works even before/without the file. Read at call time — do NOT capture it.
+let CHECKPOINT_TYPES = DEFAULT_CHECKPOINT_TYPES;
+// Provenance of the map currently in effect: 'checkpoint-classification.md' once
+// the file has been loaded, else 'default'. Surfaced so a failed load is visible.
+let CHECKPOINT_TYPES_SOURCE = 'default';
+
+// Parse checkpoint-classification.md into { type: [ids] }. Recognises the
+// "## <Type>" section headings for the five known checkpoint types and the bare
+// "- <id>" bullets beneath each; the level-1 title, the "## Notes" prose, and any
+// unknown heading are ignored (their bullets carry explanatory text, not ids, so
+// they would not match anyway). Returns null when the text is empty or none of
+// the known headings are present, so callers can keep the map already in effect.
+function parseCheckpointClassification(md) {
+  if (typeof md !== 'string' || !md.trim()) return null;
+  const known = new Set(CHECKPOINT_TYPE_ORDER);
+  const out = {};
+  let current = null;
+  for (const rawLine of md.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const heading = line.match(/^#{2,3}\s+(.+?)\s*$/);
+    if (heading) {
+      const title = heading[1].trim();
+      current = known.has(title) ? title : null;
+      if (current && !out[current]) out[current] = [];
+      continue;
+    }
+    if (!current) continue;
+    // A classification bullet is a bare Success Criterion id and nothing else,
+    // e.g. "- 1.1.1" or "- 3.3.2.b" (optionally back-ticked). Prose bullets in
+    // the Notes section do not match and are skipped.
+    const bullet = line.match(/^[-*]\s+`?(\d+\.\d+\.\d+(?:\.[a-z])?)`?\s*$/i);
+    if (bullet && current) out[current].push(bullet[1]);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// Make checkpoint-classification.md the classification S5 validates against.
+// Accepts the file's parsed map only when it is structurally complete — every one
+// of the five known type headings present (an empty list under a present heading
+// is honoured, so a checkpoint may be deliberately reclassified or removed) — so a
+// truncated/garbled file cannot silently drop whole types; otherwise the embedded
+// fallback stays in effect. Returns the source now in effect ('checkpoint-
+// classification.md' or 'default').
+function loadCheckpointClassification(md) {
+  const parsed = parseCheckpointClassification(md);
+  const complete = parsed && CHECKPOINT_TYPE_ORDER.every(type => Array.isArray(parsed[type]));
+  if (complete) {
+    const map = {};
+    CHECKPOINT_TYPE_ORDER.forEach(type => { map[type] = parsed[type].slice(); });
+    CHECKPOINT_TYPES = map;
+    CHECKPOINT_TYPES_SOURCE = 'checkpoint-classification.md';
+  } else {
+    CHECKPOINT_TYPES = DEFAULT_CHECKPOINT_TYPES;
+    CHECKPOINT_TYPES_SOURCE = 'default';
+  }
+  return CHECKPOINT_TYPES_SOURCE;
+}
+
 function classifyCheckpoint(checkpoint) {
   const value = String(checkpoint || '').trim().toLowerCase();
   if (!value) return null;
   const idMatch = value.match(/\b\d+\.\d+\.\d+(?:\.[a-z])?\b/);
   const checkpointId = idMatch ? idMatch[0] : value;
   const matches = cp => checkpointId === cp || checkpointId.startsWith(cp + '.');
-  if (CHECKPOINT_TYPES['Screen Reader'].some(matches)) return 'Screen Reader';
+  if ((CHECKPOINT_TYPES['Screen Reader'] || []).some(matches)) return 'Screen Reader';
   if (matches('2.1.1') && /action cannot be performed with a screen reader turned on/i.test(value)) return 'Screen Reader';
-  for (const type of ['Visual', 'Color', 'Text Spacing', 'Keyboard']) {
-    if (CHECKPOINT_TYPES[type].some(matches)) return type;
+  for (const type of CHECKPOINT_TYPE_ORDER) {
+    if (type === 'Screen Reader') continue;   // already resolved above (with its 2.1.1 exception)
+    if ((CHECKPOINT_TYPES[type] || []).some(matches)) return type;
   }
   return null;
 }
@@ -524,8 +650,10 @@ const TEST_METHOD_MATRIX = {
 };
 
 // Automation issues are independent of platform and checkpoint type: identified
-// first (Method = Automated/Automation) and always validated against this one
-// Test Method, with Assistive Technology not allowed in the Context (spec §8F).
+// first (Method = Automated/Automation, or an axe DevTools Test Method) and always
+// validated against this one Test Method, with Assistive Technology NOT required
+// and not allowed in the Context — a 4.1.2 Automation issue is not held to the
+// Screen-Reader "AT required" rule (spec §8F).
 const AUTOMATION_TEST_METHOD = 'Chrome on Windows using axe DevTools Chrome browser extension';
 
 function expectedTestMethod(checkpointType, platform) {
@@ -832,14 +960,20 @@ function runChecks(row) {
 
     if (!testMethod) issues.push('The Context section does not end with a "Test Method:" line.');
 
-    // Context AT + Test Method rules. Automation issues are identified FIRST and
-    // validated independently of the checkpoint-type rules (spec §12): AT must
-    // not appear in the Context and the Test Method must be the axe DevTools
-    // string — this prevents an Automation issue from being validated against a
-    // checkpoint-type Test Method. Otherwise the checkpoint classification is
-    // authoritative. (issueType — inferred from the submitted Test Method — is
-    // used only by the older S6 step-consistency validation, not here.)
-    const isAutomationIssue = /^autom/i.test(method);
+    // Context AT + Test Method rules. The issue TYPE is determined FIRST, and the
+    // Assistive-Technology requirement follows from it: an Automation issue never
+    // requires AT (and must not carry it), whatever its checkpoint — so a 4.1.2
+    // Automation issue is NOT held to the Screen-Reader "AT required" rule. An
+    // Automation issue is identified from the Method column (Automated/Automation)
+    // OR from an axe DevTools Test Method, which the tool uses only for automation
+    // — this catches automation issues whose Method column is blank or mislabelled,
+    // which were previously mis-validated as their checkpoint type and wrongly told
+    // to add Assistive Technology. Only when the issue is NOT automation does the
+    // checkpoint classification drive the AT + Test-Method rules (so the Native /
+    // Android-mobile-web screen-reader "AT required" rule is unchanged). (issueType
+    // — inferred from the submitted Test Method — is used only by the older S6
+    // step-consistency validation, not here.)
+    const isAutomationIssue = /^autom/i.test(method) || /axe\s*dev\s*tools/i.test(testMethod);
     if (isAutomationIssue || checkpointType) {
       // AT presence is judged from the CONTEXT TEXT ONLY (the Assistive
       // Technology / Screen Reader line, or an AT name in the Context). The CSV
@@ -886,9 +1020,13 @@ function runChecks(row) {
         }
 
         perPlatform.forEach(({ p, type }) => {
+          // Platform applicability is decided solely by whether a Test Method rule
+          // exists for this checkpoint + platform in TEST_METHOD_MATRIX. When none
+          // exists, do NOT infer, borrow from another platform, or invent a generic
+          // Test Method — report it as not-applicable and ask for manual checking.
           const expected = type ? expectedTestMethod(type, p) : null;
           if (!expected) {
-            issues.push(`No Test Method rule is currently defined for ${type || 'this'} checkpoints on ${p}. Do not infer or invent a Test Method.`);
+            issues.push(`${checkpoint} is not applicable in ${p}. Please check manually.`);
             return;
           }
           if (!testMethod) return;   // a missing Test Method line is flagged separately above
@@ -985,62 +1123,93 @@ function runChecks(row) {
     }
   })();
 
-  // 6. Issue Type + Step 1 consistency
+  // 6. Issue Type (from checkpoint-classification.md) + Step 1 consistency.
+  // The Issue Type is taken STRICTLY from the checkpoint classification for the
+  // applicable checkpoint + platform (resolveCheckpointType, backed by
+  // checkpoint-classification.md) — it is never inferred, derived, or overridden
+  // from the Test Method, the issue content, or the checkpoint wording, and a
+  // platform-specific type (e.g. 2.1.1 is Keyboard on Web but Screen Reader on iOS)
+  // uses the value for THIS platform. A Screen Reader checkpoint's Step 1 must turn
+  // the screen reader on first; every other type must not. Automation issues
+  // (identified first, exactly as in S5) follow the open-URL / F12 pattern that S10
+  // validates, so they never require a screen-reader step. When a checkpoint type
+  // exists but has no Test Method rule for the platform, the issue is reported "not
+  // applicable" (same rule and message as S5) rather than inventing a step.
   (function () {
+    const isAutomationIssue = /^autom/i.test(method) || /axe\s*dev\s*tools/i.test(testMethod);
+    const s6Platforms = matrixPlatformsFor(rawPlatform, osVal, atVal);
+    const platformsToCheck = s6Platforms.length ? s6Platforms : [checkpointPlatform(platform, osVal, atVal)];
+    const perPlatform = platformsToCheck.map(p => ({ p, type: resolveCheckpointType(checkpoint, p) }));
+
+    // Platform applicability: a defined checkpoint type with no Test Method rule on
+    // a platform is "not applicable" — do not invent a Step 1 for that combination.
+    const naMsgs = [];
+    perPlatform.forEach(({ p, type }) => {
+      if (type && !expectedTestMethod(type, p)) {
+        const m = `${checkpoint} is not applicable in ${p}. Please check manually.`;
+        if (!naMsgs.includes(m)) naMsgs.push(m);
+      }
+    });
+
     if (!step1) {
-      checks.push({ id: 'S6', name: `Issue type + Step 1 (${issueType})`, status: 'fail', note: 'Step 1 is missing from the Steps to Reproduce.' });
+      checks.push({ id: 'S6', name: 'Issue type + Step 1', status: 'fail',
+        note: [...naMsgs, 'Step 1 is missing from the Steps to Reproduce.'].join(' ') });
       return;
     }
+
     const t1 = step1.text.toLowerCase();
-    const mentionsScreenReaderTurnOn = /turn on (the )?(screen reader|nvda|voice ?over|talkback|jaws|narrator)/.test(t1);
-    const mentionsVoiceControl = /voice control/.test(t1);
-    const mentionsSwitchAccess = /switch access/.test(t1);
-    const mentionsAnyAT = mentionsScreenReaderTurnOn || mentionsVoiceControl || mentionsSwitchAccess;
+    const step1TurnsOnScreenReader = /turn on (the )?(screen reader|nvda|voice ?over|talkback|jaws|narrator)/.test(t1);
+    const anyStepEnablesAT = AT_REFERENCE_RE.test(steps.map(s => s.text).join('\n'));
     const mentionsUrl = /\burl\b/.test(t1);
-
-    let ok = true, note = '';
     const got = step1.text ? `It currently says: "${step1.text.slice(0, 90)}".` : '';
-    if (issueType === 'Screen Reader') {
-      ok = mentionsScreenReaderTurnOn;
-      note = ok ? 'Step 1 turns on the screen reader, which matches this issue type.' : `Step 1 should turn on the screen reader. ${got}`.trim();
-    } else if (issueType === 'Voice Control') {
-      ok = mentionsVoiceControl;
-      note = ok ? 'Step 1 turns on Voice Control, which matches this issue type.' : `Step 1 should turn on Voice Control. ${got}`.trim();
-    } else if (issueType === 'Switch Access') {
-      ok = mentionsSwitchAccess;
-      note = ok ? 'Step 1 turns on Switch Access, which matches this issue type.' : `Step 1 should turn on Switch Access. ${got}`.trim();
-    } else if (issueType === 'Keyboard' || issueType === 'Device-only' || issueType === 'Color Contrast Tool' || issueType === 'Other') {
-      ok = !mentionsAnyAT;
-      note = ok ? 'Step 1 does not turn on a screen reader or tool, which matches this issue type.' : `Step 1 should not turn on a screen reader or tool for a ${issueType} issue. ${got}`.trim();
-    } else {
-      ok = true;
-      note = 'The issue type could not be worked out from the Test Method line, so this was skipped.';
+
+    // Only platforms that actually have a Test Method rule drive the Step-1
+    // expectation. Screen Reader wins when platforms disagree (a mixed issue).
+    const applicable = perPlatform.filter(({ p, type }) => type && expectedTestMethod(type, p));
+    const requiresScreenReader = !isAutomationIssue && applicable.some(x => x.type === 'Screen Reader');
+    const nonSrType = (applicable.find(x => x.type && x.type !== 'Screen Reader') || {}).type;
+
+    const issues = naMsgs.slice();
+    let note = '';
+
+    if (requiresScreenReader) {
+      // Screen Reader checkpoint: Step 1 MUST turn the screen reader on, and it must
+      // be the first step (before navigating to or interacting with the page).
+      if (!step1TurnsOnScreenReader) {
+        issues.push(`Step 1 should be "Turn on the screen reader." for this Screen Reader checkpoint, and it must be the first step. ${got}`.trim());
+      } else {
+        note = 'Step 1 turns on the screen reader first, which matches this Screen Reader checkpoint.';
+      }
+    } else if (isAutomationIssue) {
+      // Automation: no screen-reader step (S10 checks the open-URL / F12 pattern).
+      if (step1TurnsOnScreenReader) issues.push(`Step 1 should not turn on a screen reader for an Automation issue. ${got}`.trim());
+      else note = 'Step 1 follows the automation pattern (no screen reader), which matches this issue.';
+    } else if (nonSrType) {
+      // Visual / Color / Text Spacing / Keyboard: Step 1 must NOT turn on a screen reader.
+      if (step1TurnsOnScreenReader) issues.push(`Step 1 should not turn on a screen reader for a ${nonSrType} checkpoint. ${got}`.trim());
+      else note = `Step 1 does not turn on a screen reader, which matches this ${nonSrType} checkpoint.`;
+    } else if (!naMsgs.length) {
+      // No applicable type resolved and nothing flagged not-applicable — an unlisted
+      // checkpoint (e.g. a bare 3.3.2). Keep the legacy behaviour: impose no
+      // screen-reader expectation; the dedicated rules below still run.
+      note = 'This checkpoint type does not require a screen-reader step, so Step 1 was not constrained.';
     }
 
-    // Platform mismatch flags
-    let mismatch = null;
-    if (issueType === 'Voice Control' && (platform === 'Android Tablet' || platform === 'Android Mobile')) {
-      mismatch = 'Voice Control is an iPhone/iPad feature, but this is an Android issue.';
+    // 3.3.2 (Labels or Instructions) needs no Assistive Technology: no test step may
+    // enable one, whatever the checkpoint type resolved to.
+    if (is332 && anyStepEnablesAT) {
+      issues.push('Step 1 should not start with "Turn on screen reader".');
     }
-    if (issueType === 'Switch Access' && (platform === 'iPad' || platform === 'iPhone')) {
-      mismatch = 'Switch Access is an Android feature, but this is an iPhone/iPad issue.';
-    }
+
+    // Native issues: a Step mentioning a "URL" looks copied from a Web template.
     if (native && mentionsUrl) {
-      mismatch = (mismatch ? mismatch + ' ' : '') + 'Step 1 mentions a "URL", which does not apply to app testing — it looks copied from a Web template.';
+      issues.push('Step 1 mentions a "URL", which does not apply to app testing — it looks copied from a Web template.');
     }
 
-    // 3.3.2 (Labels or Instructions) needs no Assistive Technology: no test step
-    // should enable it, whatever the Test Method classified the issue as. This
-    // overrides the issue-type expectation above.
-    if (is332 && AT_REFERENCE_RE.test(steps.map(s => s.text).join('\n'))) {
-      ok = false;
-      note = 'Step 1 should not start with "Turn on screen reader".';
-    }
-
-    if (!ok || mismatch) {
-      checks.push({ id: 'S6', name: `Issue type + Step 1 (${issueType})`, status: 'fail', note: [!ok ? note : null, mismatch].filter(Boolean).join(' ') });
+    if (issues.length) {
+      checks.push({ id: 'S6', name: 'Issue type + Step 1', status: 'fail', note: issues.join(' '), notes: issues });
     } else {
-      checks.push({ id: 'S6', name: `Issue type + Step 1 (${issueType})`, status: 'pass', note });
+      checks.push({ id: 'S6', name: 'Issue type + Step 1', status: 'pass', note });
     }
   })();
 
@@ -1214,13 +1383,16 @@ function runChecks(row) {
     }
   })();
 
-  // 14. Native recommendation vs authoritative Excel reference (native only).
-  // Deterministic lookup: platform → tab → checkpoint + Summary(Issue Description)
-  // → Recommendation to fix, then a formatting-normalised comparison against the
-  // audit's Remediation Recommendation — the field must EQUAL or START WITH an
-  // authoritative reference (trailing per-issue notes are allowed). No semantic
-  // matching, no cross-platform fallback, no closest-match; a broken mapping is
-  // reported as an ERROR rather than guessed. "RULE"/"BACKGROUND" must not appear.
+  // 14. Native recommendation vs authoritative reference (native only).
+  // Mapping-driven: the issue's Auditor Summary is mapped back to the Native IDL
+  // Summary via the per-platform tab of NATIVE_SUMMARY_MAP (iOS issues use the
+  // Native iOS tab; Android issues the Native Android tab — never cross), and that
+  // IDL Summary selects the authoritative Recommendation in NATIVE_RECOMMENDATIONS.
+  // The audit's Remediation Recommendation must then EQUAL or START WITH that
+  // Recommendation (trailing per-issue notes allowed). The Recommendation is never
+  // inferred from the checkpoint or a similar issue: if the Auditor Summary has no
+  // mapping, the issue is reported for manual verification. "RULE"/"BACKGROUND"
+  // must not appear in the Recommendation (unchanged).
   (function () {
     if (!native) {
       checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'Only applies to Native app issues.' });
@@ -1235,44 +1407,45 @@ function runChecks(row) {
       return;
     }
     const tabName = platformKind === 'iOS' ? 'native iOS' : 'native Android';
-    const lookup = findNativeRecommendation(platformKind, checkpoint, summary);
-    if (lookup.status === 'no-data') {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'The Native recommendation reference is not loaded, so the recommendation could not be validated.' });
-      return;
-    }
-    if (lookup.status === 'no-checkpoint') {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'ERROR – The issue has no Checkpoint, so the Native recommendation could not be looked up.' });
-      return;
-    }
-    if (lookup.status === 'checkpoint-not-found') {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `ERROR – Checkpoint "${checkpoint}" was not found in the "${tabName}" reference tab.` });
-      return;
-    }
-    const rows = lookup.rows;
-    const pinned = lookup.pinned;
-    const cpId = (pinned || rows[0]).checkpoint;
     const sectionsN = splitSections(desc);
     const actual = fieldContent(sectionsN, desc, 'Remediation Recommendation') || fieldContent(sectionsN, desc, 'Recommendation to fix');
-    const mkDetail = (expected, issueDescription, matchMode) => ({
-      platform: platformKind, tab: tabName, checkpoint: cpId,
-      issueDescription: issueDescription || null, expected, actual,
-      variantCount: rows.length, matchMode,
+    const mkDetail = (expected, issueDescription, auditorSummary, cpId) => ({
+      platform: platformKind, tab: tabName, checkpoint: cpId || normCheckpoint(checkpoint),
+      issueDescription: issueDescription || null, auditorSummary: auditorSummary || null,
+      expected: expected || null, actual, matchMode: 'mapping',
     });
     if (!actual) {
       checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'N/A – Remediation Recommendation is missing; S12 reports the missing required field.' });
       return;
     }
+    // "RULE"/"BACKGROUND" must never appear — enforced independently of the mapping.
     if (/^\s*RULE\b/im.test(actual)) {
-      const exp = (pinned || rows[0]).recommendation;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "RULE" section, which must be removed.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "RULE" section, which must be removed.', detail: mkDetail(null, null, nativeAuditorSummary(summary).trim()) });
       return;
     }
     if (/^\s*BACKGROUND\b/im.test(actual)) {
-      const exp = (pinned || rows[0]).recommendation;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "BACKGROUND" section, which must be removed.', detail: mkDetail(exp, (pinned || {}).issueDescription, pinned ? 'row' : 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'FAIL – Recommendation to fix contains a "BACKGROUND" section, which must be removed.', detail: mkDetail(null, null, nativeAuditorSummary(summary).trim()) });
       return;
     }
-    const na = normRec(actual);
+
+    const lookup = findNativeRecommendationByMapping(platformKind, checkpoint, summary);
+    if (lookup.status === 'no-map' || lookup.status === 'no-data') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'na', note: 'The Native summary→recommendation mapping is not loaded, so the recommendation could not be validated.' });
+      return;
+    }
+    if (lookup.status === 'no-summary') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: 'ERROR – The issue has no Summary, so the Native recommendation could not be mapped.' });
+      return;
+    }
+    if (lookup.status === 'no-mapping') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `MANUAL – The Auditor Summary "${lookup.auditorSummary}" has no mapping in the "${tabName}" tab, so the expected Recommendation could not be determined. Please verify the Recommendation manually.`, detail: mkDetail(null, null, lookup.auditorSummary) });
+      return;
+    }
+    if (lookup.status === 'no-recommendation') {
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note: `MANUAL – The Auditor Summary "${lookup.auditorSummary}" maps to a Native IDL Summary with no Recommendation on file. Please verify the Recommendation manually.`, detail: mkDetail(null, null, lookup.auditorSummary) });
+      return;
+    }
+
     // The authoritative recommendation must be present verbatim, but the ticket
     // may append extra per-issue content (e.g. a "Note: applicable screens"
     // list). So a reference matches when the field EQUALS it or STARTS WITH it.
@@ -1300,24 +1473,18 @@ function runChecks(row) {
         return actualIndex === actualWords.length && omitted <= 2;
       }));
     };
-    if (pinned) {
-      // Summary confidently identified the exact row → compare against it only.
-      const ok = refMatches(pinned.recommendation);
-      checks.push(ok
-        ? { id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') }
-        : { id: 'S14', name: 'Native recommendation', status: 'fail', note: `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(pinned.recommendation, pinned.issueDescription, 'row') });
-      return;
-    }
-    // Summary didn't identify a specific row → accept a match against any
-    // authoritative row for this platform + checkpoint.
-    const match = rows.find(r => refMatches(r.recommendation));
+
+    // The mapped Auditor Summary determines the expected Recommendation(s). When an
+    // Auditor Summary maps to several IDL Summaries, a match against ANY is accepted.
+    const match = lookup.expected.find(x => refMatches(x.recommendation));
     if (match) {
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches an authoritative "${tabName}" reference for checkpoint ${cpId}.`, detail: mkDetail(match.recommendation, match.issueDescription, 'any') });
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'pass', note: `The Recommendation to fix matches the authoritative "${tabName}" reference mapped from the Auditor Summary "${match.auditorSummary}".`, detail: mkDetail(match.recommendation, match.idlSummary, match.auditorSummary, normCheckpoint(match.checkpoint)) });
     } else {
-      const note = rows.length > 1
-        ? `FAIL – Recommendation to fix does not match any of the ${rows.length} authoritative "${tabName}" references for checkpoint ${cpId}.`
-        : `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference for checkpoint ${cpId}.`;
-      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note, detail: mkDetail(rows[0].recommendation, rows[0].issueDescription, 'any') });
+      const first = lookup.expected[0];
+      const note = lookup.expected.length > 1
+        ? `FAIL – Recommendation to fix does not match any of the ${lookup.expected.length} authoritative "${tabName}" references mapped from the Auditor Summary "${first.auditorSummary}".`
+        : `FAIL – Recommendation to fix does not match the authoritative "${tabName}" reference mapped from the Auditor Summary "${first.auditorSummary}".`;
+      checks.push({ id: 'S14', name: 'Native recommendation', status: 'fail', note, detail: mkDetail(first.recommendation, first.idlSummary, first.auditorSummary, normCheckpoint(first.checkpoint)) });
     }
   })();
 
@@ -1331,11 +1498,25 @@ function runChecks(row) {
   };
 }
 
+// In Node (tests / CLI), load the real checkpoint-classification.md immediately so
+// classifyCheckpoint — and therefore S5 — validates against the file rather than
+// the embedded fallback. A read failure leaves the fallback in place.
+if (typeof module !== 'undefined' && module.exports && typeof require !== 'undefined') {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    loadCheckpointClassification(fs.readFileSync(path.join(__dirname, 'checkpoint-classification.md'), 'utf8'));
+  } catch (e) { /* keep the embedded fallback */ }
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     runChecks, splitSections, isMeaningless, findSummaryMapping, isColorContrastIssue,
-    resolveNativePlatform, normCheckpoint, normRec, findNativeRecommendation,
+    resolveNativePlatform, normCheckpoint, normRec, normDesc, findNativeRecommendation,
+    findNativeRecommendationByMapping, nativeAuditorSummary,
     classifyCheckpoint, resolveCheckpointType, expectedTestMethod, checkpointPlatform, matrixPlatformsFor,
     testMethodMatches, classifyTestMethodEntry, TEST_METHOD_MATRIX, AUTOMATION_TEST_METHOD,
+    parseCheckpointClassification, loadCheckpointClassification, DEFAULT_CHECKPOINT_TYPES,
+    getCheckpointTypes: () => CHECKPOINT_TYPES, getCheckpointClassificationSource: () => CHECKPOINT_TYPES_SOURCE,
   };
 }
